@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { KISS_PLAN, type Brain, type Brief, type BrainCapture, type CodeReview, type Lesson, type UxReview } from "../adapters/Brain.js";
+import { BrainRefusal, KISS_PLAN, type Brain, type Brief, type BrainCapture, type CodeReview, type Lesson, type UxReview } from "../adapters/Brain.js";
 import type { Reviewer, ReviewerMiss, ReviewerMisses } from "../adapters/ReviewerMisses.js";
 import type { ComputeAgentClient } from "../adapters/ComputeAgentClient.js";
 import type { IssueTracker } from "../adapters/IssueTracker.js";
@@ -98,6 +98,8 @@ export class IssueLoop {
   private readonly costs = new Map<string, { brain: number; dev: number }>();
   /** Lesson being drafted after a miss: written during the next attempt, awaited by its report. */
   private readonly lessonDrafts = new Map<string, Promise<Lesson | null>>();
+  /** Why Studio declined part of the current delivery (quota, plan), shown as is in the report. */
+  private readonly notices = new Map<string, string>();
 
   constructor(private readonly deps: IssueLoopDeps) {
     this.now = deps.now ?? (() => new Date().toISOString());
@@ -164,13 +166,14 @@ export class IssueLoop {
 
     let current = result.devSessionId ? task.continuesIn(result.devSessionId) : task;
     const diff = result.diff?.trim() ? result.diff : null;
-    const reviewing = !!this.deps.brain && (seen.length > 0 || !!diff);
-    if (reviewing) current = await this.recordStage(current, "review", "started");
-    // The UX review (the most expensive call) only looks at the task's scenarios, or at everything if none.
+    // The UX review (the most expensive call) only looks at the task's scenarios, or at everything if none,
+    // and only when the developer's plan includes it.
     const ofTask = seen.filter((capture) => capture.forTask);
-    const toReview = (ofTask.length ? ofTask : seen).map(({ forTask: _, ...capture }) => capture);
+    const toReview = this.lastBriefs.get(current.key)?.reviews?.ux === false ? [] : (ofTask.length ? ofTask : seen).map(({ forTask: _, ...capture }) => capture);
+    const reviewing = !!this.deps.brain && (toReview.length > 0 || !!diff);
+    if (reviewing) current = await this.recordStage(current, "review", "started");
     const [ux, code] = await Promise.all([this.reviewOf(current, toReview), this.codeReviewOf(current, diff)]);
-    if (reviewing) current = await this.recordStage(current, "review", (seen.length === 0 || ux) && (!diff || code) ? "passed" : "failed");
+    if (reviewing) current = await this.recordStage(current, "review", (toReview.length === 0 || ux) && (!diff || code) ? "passed" : "failed");
     this.spend(current.key, "brain", ux?.trace?.costUsd, code?.trace?.costUsd);
     this.spend(current.key, "dev", result.devCostUsd ?? undefined);
 
@@ -202,6 +205,7 @@ export class IssueLoop {
         ...(ux?.criteria || code?.criteria ? { criteria: Criteria.merge(ux?.criteria, code?.criteria) } : {}),
         // Instructions lost on the Runner side (brain down) or on the Mac (not received in time): the stage failed.
         fallback: current.progress.brief?.status === "failed",
+        ...(this.notices.has(current.key) ? { notice: this.notices.get(current.key) } : {}),
         trace: { brief: this.lastBriefs.get(current.key)?.trace, review: ux?.trace, code: code?.trace },
         cost: this.costs.get(current.key),
         ...(result.relatedBranches?.length ? { relatedBranches: result.relatedBranches } : {}),
@@ -209,6 +213,7 @@ export class IssueLoop {
         ...(lesson ? { lesson: { text: lesson.text, scope: lesson.scope } } : {}),
       });
       this.costs.delete(current.key);
+      this.notices.delete(current.key);
       // A miss means nobody had flagged anything: if a reviewer asked for a fix, the KO proves them right.
       const reviews = [["ux", ux], ["code", code]] as const;
       const ran = reviews.filter(([, review]) => review);
@@ -225,11 +230,11 @@ export class IssueLoop {
     try {
       const criteria = this.lastBriefs.get(task.key)?.criteria;
       return await this.deps.brain.review({
-        app: appOf(task), title: task.tracker.title, body: task.tracker.body, captures, followUp: task.tracker.followUp,
+        task: task.key, app: appOf(task), title: task.tracker.title, body: task.tracker.body, captures, followUp: task.tracker.followUp,
         ...(criteria ? { criteria } : {}), ...feedbackOf(task),
       });
     } catch (error) {
-      this.warn(`UX review of ${task.key} failed`, error);
+      this.failed(task, "UX review", error);
       return null;
     }
   }
@@ -238,11 +243,17 @@ export class IssueLoop {
     if (!this.deps.brain || !diff) return null;
     try {
       const criteria = this.lastBriefs.get(task.key)?.criteria;
-      return await this.deps.brain.reviewCode({ app: appOf(task), title: task.tracker.title, body: task.tracker.body, diff, ...feedbackOf(task), ...(criteria ? { criteria } : {}) });
+      return await this.deps.brain.reviewCode({ task: task.key, app: appOf(task), title: task.tracker.title, body: task.tracker.body, diff, ...feedbackOf(task), ...(criteria ? { criteria } : {}) });
     } catch (error) {
-      this.warn(`Code review of ${task.key} failed`, error);
+      this.failed(task, "Code review", error);
       return null;
     }
+  }
+
+  /** A refusal (quota, plan) is news for the developer; anything else is an outage for the logs. */
+  private failed(task: TrackedTask, what: string, error: unknown): void {
+    if (error instanceof BrainRefusal) this.notices.set(task.key, error.message);
+    else this.warn(`${what} for ${task.key} failed`, error);
   }
 
   private spend(key: string, on: "brain" | "dev", ...amounts: (number | undefined)[]): void {
@@ -259,10 +270,10 @@ export class IssueLoop {
     if (!this.deps.brain) return raw;
     try {
       return await this.deps.brain.brief({
-        app: appOf(task), title: task.tracker.title, body: task.tracker.body, attempt: task.shownAttempt + 1, feedback: task.lastFeedback,
+        task: task.key, app: appOf(task), title: task.tracker.title, body: task.tracker.body, attempt: task.shownAttempt + 1, feedback: task.lastFeedback,
       });
     } catch (error) {
-      this.warn(`Instructions for ${task.key} failed, running the raw task`, error);
+      this.failed(task, "Instructions", error);
       return raw;
     }
   }
@@ -325,11 +336,11 @@ export class IssueLoop {
     if (!this.deps.brain) return null;
     try {
       return await this.deps.brain.proposeLesson({
-        app: appOf(task), title: task.tracker.title, body: task.tracker.body, feedback: miss.feedback, reviewers: miss.reviewers,
+        task: task.key, app: appOf(task), title: task.tracker.title, body: task.tracker.body, feedback: miss.feedback, reviewers: miss.reviewers,
         source: `${task.key} · ${miss.at.slice(0, 10)}`,
       });
     } catch (error) {
-      this.warn(`Lesson draft for ${task.key} failed`, error);
+      this.failed(task, "Lesson draft", error);
       return null;
     }
   }

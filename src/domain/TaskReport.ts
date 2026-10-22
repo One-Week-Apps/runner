@@ -61,6 +61,8 @@ export interface ReportInput {
   criteria?: { label: string; met?: boolean; by?: "ux" | "code" }[];
   /** The Runner started from the raw task: the brain's instructions never arrived. */
   fallback?: boolean;
+  /** Why Studio was not used, in the developer's words (quota reached, review not included…). */
+  notice?: string;
   /** Knowledge version and model of each brain call (collapsed). */
   trace?: { brief?: Provenance; review?: Provenance; code?: Provenance };
   /** Other unmerged tasks touching the same files: a conflict is coming. */
@@ -137,7 +139,9 @@ export const TaskReport = {
       "",
     ];
 
-    if (input.fallback) {
+    if (input.notice) {
+      lines.push(`ℹ️ ${escape(input.notice)}`, "");
+    } else if (input.fallback) {
       lines.push("⚠️ Consignes non reçues : le Runner est parti de la tâche telle qu'écrite.", "");
     }
 

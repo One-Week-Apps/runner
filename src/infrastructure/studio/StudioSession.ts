@@ -75,6 +75,7 @@ export class StudioSession {
         invalid_code: "code inconnu ou expiré : demande-en un nouveau dans Focus",
         invalid_request: "le code fait 6 chiffres",
         too_many_attempts: "trop d'essais, réessaie dans une minute",
+        too_many_macs: "ton offre Studio compte déjà tous ses Macs : retire-en un dans Focus, ou passe à Studio Pro (3 Macs)",
       };
       throw new StudioAuthError(`Appairage refusé : ${why[reason] ?? reason}.`);
     }

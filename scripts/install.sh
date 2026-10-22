@@ -86,7 +86,7 @@ config = {
 }
 json.dump(config, open(path, "w"), indent=2, ensure_ascii=False)
 PY
-  (cd "$ROOT" && AITASKER_CONFIG="$CONFIG" node dist/pair.js "$CODE" "$MAC_NAME") || { echo "Code refusé ou expiré : demande un nouveau code dans Focus (Mac → Connecter mon Mac)."; exit 1; }
+  (cd "$ROOT" && AITASKER_CONFIG="$CONFIG" node dist/pair.js "$CODE" "$MAC_NAME") || { echo "Appairage impossible (raison ci-dessus) : demande un nouveau code dans Focus (Mac → Connecter mon Mac)."; exit 1; }
   ok "Studio : $MAC_NAME relié à ton compte Focus, dépôt $REPO (branche de base $BASE)"
 elif [ -n "$REPO" ]; then
   AUTHOR="$(gh api user -q .login)"

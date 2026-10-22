@@ -1,10 +1,13 @@
-import type { Brain, Brief, BriefRequest, CodeReview, CodeReviewRequest, Lesson, LessonRequest, ReviewRequest, UxReview } from "../../adapters/Brain.js";
+import { BrainRefusal, type Brain, type Brief, BriefRequest, CodeReview, CodeReviewRequest, Lesson, LessonRequest, ReviewRequest, UxReview } from "../../adapters/Brain.js";
 import type { StudioSession } from "./StudioSession.js";
 
 /** A Studio function call is capped at 10 MB: screenshots beyond this budget stay in the report but are not reviewed. */
 const MAX_CAPTURE_BYTES = 6_500_000;
 
 export class StudioBrainError extends Error {}
+
+/** Callable error statuses Studio uses to decline on purpose (no plan, quota, review not included). */
+const REFUSALS: ReadonlySet<string> = new Set(["PERMISSION_DENIED", "RESOURCE_EXHAUSTED", "FAILED_PRECONDITION"]);
 
 /** The `brain` function's URL, next to the pairing one (production and emulators alike). */
 export function brainUrl(pairUrl: string): string {
@@ -61,6 +64,7 @@ export class StudioBrain implements Brain {
       body: JSON.stringify({ data: { action, request } }),
     });
     const body = (await res.json().catch(() => ({}))) as { result?: T; error?: { status?: string; message?: string } };
+    if (body.error && REFUSALS.has(body.error.status ?? "")) throw new BrainRefusal(body.error.message ?? "Studio a refusé l'appel.");
     if (!res.ok || body.error) throw new StudioBrainError(`Studio brain: ${body.error?.message ?? `HTTP ${res.status}`}`);
     const result = body.result as T;
     const cost = (result as { trace?: { costUsd?: number } } | null)?.trace?.costUsd;

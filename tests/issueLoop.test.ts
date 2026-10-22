@@ -9,7 +9,7 @@ import { TaskReport, type ReportInput } from "../src/domain/TaskReport.js";
 import { JsonFileTrackedTaskRepository } from "../src/infrastructure/JsonFileTrackedTaskRepository.js";
 import { IssueLoop, type IssueLoopConfig } from "../src/usecases/IssueLoop.js";
 import { RUNNER_MARKER } from "../src/domain/Reply.js";
-import type { Brain, Brief, BriefRequest, CodeReview, CodeReviewRequest, ExecutionPlan, Lesson, LessonRequest, ReviewRequest, UxReview } from "../src/adapters/Brain.js";
+import { BrainRefusal, type Brain, type Brief, type BriefRequest, type CodeReview, type CodeReviewRequest, type ExecutionPlan, type Lesson, type LessonRequest, type ReviewRequest, type UxReview } from "../src/adapters/Brain.js";
 import type { ReviewerMiss, ReviewerMisses } from "../src/adapters/ReviewerMisses.js";
 
 class FakeTracker implements IssueTracker {
@@ -798,7 +798,7 @@ describe("IssueLoop: a dedicated code reviewer before the developer", () => {
 
     await loop.onJobResult(withDiff(compute.jobs[0].jobId));
 
-    expect(brain.codeReviews).toEqual([{ app: "EFB", title: "Titre en gras", body: "Luciole en gras", diff: DIFF }]);
+    expect(brain.codeReviews).toEqual([{ task: "One-Week-Apps/EFB#7", app: "EFB", title: "Titre en gras", body: "Luciole en gras", diff: DIFF }]);
     expect(tracker.commentsFor(7).at(-1)!).toContain("🔍 **Revue de code** : rien à redire.");
   });
 
@@ -935,7 +935,7 @@ describe("IssueLoop: the brain learns from its misses", () => {
 
     await loop.onJobResult(result(compute.jobs[1].jobId, [shot]));
 
-    expect(brain.lessonRequests).toEqual([{ app: "EFB", title: "Titre en gras", body: "", feedback: "Scénario 1, étape 1 : le point du i est coupé", reviewers: ["ux"], source: "One-Week-Apps/EFB#7 · 2026-10-21" }]);
+    expect(brain.lessonRequests).toEqual([{ task: "One-Week-Apps/EFB#7", app: "EFB", title: "Titre en gras", body: "", feedback: "Scénario 1, étape 1 : le point du i est coupé", reviewers: ["ux"], source: "One-Week-Apps/EFB#7 · 2026-10-21" }]);
     expect(tracker.commentsFor(7).at(-1)!).toContain("📚 Si tu valides, Studio retiendra pour EFB : Texte : jamais de lettre coupée en Dynamic Type XXXL");
   });
 
@@ -1218,5 +1218,40 @@ describe("IssueLoop: switching trackers does not abandon the other tracker's tas
     await loop.tick();
 
     expect((await store.all()).find((t) => t.key === "studio:abc")!.is("abandoned")).toBe(false);
+  });
+});
+
+describe("IssueLoop: Studio plans and quotas", () => {
+  const shot = { nodeId: "Accueil", screenshotUrl: "http://mac/a.png", action: null, capturedAt: "t", scenario: "testJouer", device: "iPhone 17e", forTask: true };
+
+  it("runs the raw task when the quota is reached and tells the developer why, without logging an outage", async () => {
+    const brain = new FakeBrain();
+    const quota = "Quota du mois atteint (30/30 tâches) : tâche faite sans Studio. Renouvellement le 1er novembre.";
+    brain.brief = async (request) => { brain.briefs.push(request); throw new BrainRefusal(quota); };
+    const { tracker, compute, loop, warnings } = setup(brain);
+    tracker.open(7, "octocat", "Agrandir le bouton Jouer");
+    await loop.tick();
+
+    expect(loop.instructionsFor(compute.jobs[0].jobId)).toMatchObject({ fallback: true });
+    await loop.onJobResult(result(compute.jobs[0].jobId));
+
+    expect(brain.briefs[0].task).toBe("One-Week-Apps/EFB#7");
+    expect(tracker.commentsFor(7).at(-1)!).toContain(`ℹ️ ${quota}`);
+    expect(tracker.commentsFor(7).at(-1)!).not.toContain("Consignes non reçues");
+    expect(warnings.filter((w) => w.startsWith("Instructions"))).toEqual([]);
+  });
+
+  it("skips the UX review when the plan does not include it, and still reviews the code", async () => {
+    const brain = new FakeBrain();
+    brain.briefExtras = { reviews: { ux: false } };
+    const { tracker, compute, loop } = setup(brain);
+    tracker.open(7);
+    await loop.tick();
+
+    await loop.onJobResult({ ...result(compute.jobs[0].jobId, [shot]), diff: "+ a" });
+
+    expect(brain.reviews).toEqual([]);
+    expect(brain.codeReviews).toHaveLength(1);
+    expect(tracker.reports[0].captures).toHaveLength(1);
   });
 });

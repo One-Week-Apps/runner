@@ -6,7 +6,12 @@ export interface BrainCapture {
   image: Uint8Array;
 }
 
+/** Studio declined the call on purpose (plan, quota): the message is meant for the developer, as is. */
+export class BrainRefusal extends Error {}
+
 export interface BriefRequest {
+  /** Stable task key ("owner/app#7", "studio:…"): Studio counts tasks, not calls. */
+  task: string;
   /** The task's app: its own lessons are added to the shared know-how. */
   app?: string;
   title: string;
@@ -47,9 +52,12 @@ export interface Brief {
   trace?: BrainTrace;
   /** Fallback instructions: the raw task, because the brain did not answer. */
   fallback?: true;
+  /** Reviews the developer's plan includes; the Runner skips the others instead of sending screenshots for nothing. */
+  reviews?: { ux: boolean };
 }
 
 export interface ReviewRequest {
+  task: string;
   app?: string;
   title: string;
   body: string;
@@ -95,6 +103,7 @@ export interface UxReview {
 }
 
 export interface CodeReviewRequest {
+  task: string;
   app?: string;
   title: string;
   body: string;
@@ -116,6 +125,7 @@ export interface CodeReview {
 
 /** What a reviewer let through, according to the developer's KO. */
 export interface LessonRequest {
+  task: string;
   app: string;
   title: string;
   body: string;

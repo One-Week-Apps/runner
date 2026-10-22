@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { BrainRefusal } from "../src/adapters/Brain.js";
 import { StudioBrain, StudioBrainError, brainUrl } from "../src/infrastructure/studio/StudioBrain.js";
 import { StudioSession, type StudioConfig } from "../src/infrastructure/studio/StudioSession.js";
 
@@ -34,12 +35,12 @@ describe("StudioBrain: the Mac asks Studio's brain", () => {
     const brief = { instructions: "1. Fais-le.", plan: { uiTests: "task", devices: "main" }, trace: { knowledge: "a1b2c3d", model: "claude-sonnet-5-5", costUsd: 0.01 } };
     const { brain, calls } = fakeStudio(() => ({ json: { result: brief } }));
 
-    const result = await brain.brief({ app: "EFB", title: "Agrandir le bouton", body: "", attempt: 1, feedback: null });
+    const result = await brain.brief({ task: "a/EFB#3", app: "EFB", title: "Agrandir le bouton", body: "", attempt: 1, feedback: null });
 
     expect(result).toEqual(brief);
     expect(calls[0].url).toBe(BRAIN);
     expect(calls[0].auth).toBe("Bearer id-tok");
-    expect(calls[0].body).toEqual({ data: { action: "brief", request: { app: "EFB", title: "Agrandir le bouton", body: "", attempt: 1, feedback: null } } });
+    expect(calls[0].body).toEqual({ data: { action: "brief", request: { task: "a/EFB#3", app: "EFB", title: "Agrandir le bouton", body: "", attempt: 1, feedback: null } } });
   });
 
   it("sends screenshots as base64 and skips those beyond one call's size", async () => {
@@ -47,7 +48,7 @@ describe("StudioBrain: the Mac asks Studio's brain", () => {
     const small = { scenario: "s", step: "1", device: "d", image: new Uint8Array([1, 2, 3]) };
     const huge = { scenario: "s", step: "2", device: "d", image: new Uint8Array(7_000_000) };
 
-    await brain.review({ title: "t", body: "", captures: [small, huge] });
+    await brain.review({ task: "a/b#1", title: "t", body: "", captures: [small, huge] });
 
     expect(calls[0].body.data.request.captures).toEqual([{ scenario: "s", step: "1", device: "d", image: Buffer.from([1, 2, 3]).toString("base64") }]);
   });
@@ -56,7 +57,7 @@ describe("StudioBrain: the Mac asks Studio's brain", () => {
     const lesson = { text: "A : b", source: "s", scope: "EFB" };
     const { brain, calls } = fakeStudio((call) => ({ json: { result: call.body.data.action === "proposeLesson" ? lesson : { ok: true } } }));
 
-    expect(await brain.proposeLesson({ app: "EFB", title: "t", body: "", feedback: "f", reviewers: ["ux"], source: "s" })).toEqual(lesson);
+    expect(await brain.proposeLesson({ task: "a/EFB#3", app: "EFB", title: "t", body: "", feedback: "f", reviewers: ["ux"], source: "s" })).toEqual(lesson);
     await brain.learn(lesson);
     await brain.forget(lesson);
 
@@ -65,7 +66,17 @@ describe("StudioBrain: the Mac asks Studio's brain", () => {
 
   it("fails on a Studio refusal or outage, so the task runs raw", async () => {
     const { brain } = fakeStudio(() => ({ status: 503, json: { error: { status: "UNAVAILABLE", message: "Cerveau indisponible" } } }));
-    await expect(brain.brief({ title: "t", body: "", attempt: 1, feedback: null })).rejects.toThrow(StudioBrainError);
-    await expect(brain.brief({ title: "t", body: "", attempt: 1, feedback: null })).rejects.toThrow("Cerveau indisponible");
+    await expect(brain.brief({ task: "a/b#1", title: "t", body: "", attempt: 1, feedback: null })).rejects.toThrow(StudioBrainError);
+    await expect(brain.brief({ task: "a/b#1", title: "t", body: "", attempt: 1, feedback: null })).rejects.toThrow("Cerveau indisponible");
+  });
+
+  it("turns a deliberate Studio refusal (quota, plan) into a BrainRefusal carrying the developer's message", async () => {
+    const message = "Quota du mois atteint (30/30 tâches) : tâche faite sans Studio. Renouvellement le 1er novembre.";
+    const { brain } = fakeStudio(() => ({ status: 429, json: { error: { status: "RESOURCE_EXHAUSTED", message } } }));
+
+    const refusal = brain.brief({ task: "a/b#31", title: "t", body: "", attempt: 1, feedback: null });
+
+    await expect(refusal).rejects.toBeInstanceOf(BrainRefusal);
+    await expect(refusal).rejects.toThrow(message);
   });
 });
