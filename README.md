@@ -4,7 +4,7 @@ Runs iOS development tasks on your own Mac with your own Claude Code. You write 
 Runner implements it, builds the app, runs the UI tests on simulators, takes screenshots and sends you a report.
 You answer **OK** to open the pull request or **KO + one line of feedback** to get another attempt.
 
-*[Version française plus bas.](#en-français)*
+*[Version française plus bas.](#en-français) · Step-by-step guide (French): [Démarrer avec Studio](https://www.one-week-apps.com/studio/)*
 
 ## How it works
 
@@ -126,6 +126,8 @@ Le Runner développe vos tâches iOS sur votre Mac, avec votre Claude Code. Vous
 téléphone. Le Runner la code, compile l'app, lance les tests UI sur simulateur, prend des captures et vous
 envoie un rapport. Vous répondez **OK** pour ouvrir la pull request, ou **KO + une ligne de retour** pour une
 nouvelle tentative.
+
+Le guide pas à pas : [Démarrer avec Studio](https://www.one-week-apps.com/studio/).
 
 **Installation** avec l'app Focus (code affiché dans Focus, Mac → Connecter mon Mac) :
 
