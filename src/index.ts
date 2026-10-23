@@ -51,12 +51,16 @@ function githubToken(): string | null {
   return null;
 }
 
-/** Studio: the Mac picks up tasks from the Focus app; GitHub, when signed in, still hosts the code (pull requests, diffs). */
+/**
+ * Studio: the Mac picks up tasks from the Focus app; GitHub, when signed in, still hosts the code (pull requests, diffs).
+ * A paired Mac tells Studio it is alive in both modes, so Focus shows it as connected.
+ */
 function trackerFor(config: RunnerConfig, session: StudioSession | null): { tracker: IssueTracker; allowedAuthors: string[]; heartbeat?: () => Promise<void> } {
   const token = githubToken();
   if (config.tracker === "github") {
     if (!token) throw new Error("No GitHub token: set GITHUB_TOKEN or run `gh auth login`.");
-    return { tracker: new GitHubIssueTracker(token), allowedAuthors: config.allowedAuthors };
+    const presence = session ? new StudioIssueTracker(session) : null;
+    return { tracker: new GitHubIssueTracker(token), allowedAuthors: config.allowedAuthors, ...(presence ? { heartbeat: () => presence.heartbeat() } : {}) };
   }
   if (!session) throw new Error(`This Mac is not paired with Studio: run \`npm run pair -- <code> "<Mac name>"\` (${STUDIO_SESSION_PATH}).`);
   const studio = new StudioIssueTracker(session, token ? new GitHubIssueTracker(token) : undefined);
