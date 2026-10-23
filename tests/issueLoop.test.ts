@@ -1350,6 +1350,26 @@ class ScreenBrain extends FakeBrain {
 const on = (screen: string, size: "s" | "m" | "l" = "m", files: string[] = []) =>
   ({ footprint: { screens: [screen], files, shared: false, size } });
 
+describe("IssueLoop: Claude Code could not work at all", () => {
+  it("says why (usage limit) instead of reviewing and fixing a task nobody touched", async () => {
+    const brain = new FakeBrain();
+    const { tracker, compute, loop } = setup(brain);
+    tracker.open(7);
+    await loop.tick();
+
+    await loop.onJobResult({ ...result(compute.jobs[0].jobId), outcome: "failure", buildStatus: "pending", testStatus: "pending",
+      devError: "Claude AI usage limit reached|1792771200", diff: "diff --git a/App/AITaskerCapture.swift b/App/AITaskerCapture.swift\n" });
+
+    expect(compute.jobs).toHaveLength(1);
+    expect(brain.reviews).toEqual([]);
+    expect(brain.codeReviews).toEqual([]);
+    const report = tracker.reports.at(-1)!;
+    expect(report.notice).toContain("Claude Code n'a pas pu travailler : limite d'usage de ton compte Claude atteinte");
+    expect(report.notice).toContain("Réponds KO");
+    expect(report.internalRounds).toBe(0);
+  });
+});
+
 describe("IssueLoop: one Runner, several prepared tasks", () => {
   function scheduled(byTitle: Record<string, Partial<Brief>>, config: Partial<IssueLoopConfig> = {}) {
     const brain = new ScreenBrain();

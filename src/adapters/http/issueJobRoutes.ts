@@ -35,6 +35,7 @@ const resultSchema = z.object({
   diff: z.string().nullable().optional(),
   devCostUsd: z.number().nonnegative().nullable().optional(),
   devSessionId: z.string().nullable().optional(),
+  devError: z.string().max(2000).nullable().optional(),
   relatedBranches: z.array(z.object({ branch: z.string(), files: z.array(z.string()) })).optional(),
 });
 

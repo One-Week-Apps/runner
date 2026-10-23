@@ -8,7 +8,23 @@ logger = logging.getLogger(__name__)
 
 
 class DevStageError(Exception):
-    pass
+    """Claude Code could not do the task. `reason`: what it said, for the developer (usage limit, login…)."""
+
+    def __init__(self, message: str, reason: Optional[str] = None) -> None:
+        super().__init__(message)
+        self.reason = reason or message
+
+
+def _reason(result) -> str:
+    """A refusal (usage limit, expired login) comes as JSON on stdout with an empty stderr: keep its words."""
+    try:
+        said = json.loads(result.stdout).get("result")
+        if isinstance(said, str) and said.strip():
+            return said.strip()[:500]
+    except (json.JSONDecodeError, AttributeError):
+        pass
+    return (result.stderr or result.stdout or "aucun message").strip()[:500]
+
 
 
 class DevOutcome(NamedTuple):
@@ -68,7 +84,7 @@ async def run_dev_stage(
         raise DevStageError("Claude Code timed out")
 
     if result.exit_code != 0:
-        raise DevStageError(f"Claude Code exited with code {result.exit_code}: {result.stderr}")
+        raise DevStageError(f"Claude Code exited with code {result.exit_code}: {_reason(result)}", reason=_reason(result))
 
     try:
         parsed = json.loads(result.stdout)

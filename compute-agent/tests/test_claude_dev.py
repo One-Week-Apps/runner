@@ -148,3 +148,15 @@ async def test_each_run_logs_its_cost_and_whether_it_resumed(caplog):
                             last_feedback="corrige", timeout=10, resume_session="s1")
 
     assert "[claude code] ~$0.400, 7 turns, resumed session" in caplog.text
+
+
+async def test_a_refusal_says_why_even_when_stderr_is_empty():
+    # Claude Code refuses at once (usage limit) and explains itself in its JSON output, not on stderr.
+    output = json.dumps({"is_error": True, "result": "Claude AI usage limit reached|1792771200"})
+    runner = FakeCommandRunner(CommandResult(1, output, ""))
+
+    with pytest.raises(DevStageError) as raised:
+        await run_dev_stage(runner, repo_path="/r", description="d", instruction="initial_dev", last_feedback=None, timeout=10)
+
+    assert raised.value.reason == "Claude AI usage limit reached|1792771200"
+    assert "usage limit" in str(raised.value)

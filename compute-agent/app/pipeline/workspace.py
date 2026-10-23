@@ -85,7 +85,9 @@ MAX_DIFF_CHARS = 200_000
 
 async def task_diff(runner: CommandRunner, *, repo_path: str, base_branch: str, timeout: float) -> str:
     """Everything the task changed since its base branch, earlier attempts included, for the code reviewer."""
-    result = await runner.run(["git", "diff", f"origin/{base_branch}...HEAD"], cwd=repo_path, timeout=timeout)
+    # The capture helper is refreshed by the Runner on every branch: not the task's code, kept out of the review.
+    result = await runner.run(["git", "diff", f"origin/{base_branch}...HEAD", "--", ".", ":(exclude)**/AITaskerCapture.swift"],
+                              cwd=repo_path, timeout=timeout)
     if result.exit_code != 0 or result.timed_out:
         return ""
     return result.stdout[:MAX_DIFF_CHARS]

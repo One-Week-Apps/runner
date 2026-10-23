@@ -114,6 +114,7 @@ async def test_dev_failure_reports_pending_pending(mock_post_callback):
     assert body.build_status == "pending"
     assert body.test_status == "pending"
     assert not runner.was_called_with_prefix("xcodebuild", "build-for-testing")
+    assert body.dev_error == "claude failed"
 
 
 async def test_build_failure_reports_failed_pending(mock_post_callback):
@@ -492,7 +493,8 @@ async def test_the_task_diff_is_sent_after_the_commit(mock_post_callback, tmp_pa
 
     await run_job(MANAGED_JOB, runner=runner, timeout_seconds=10, repos_dir=tmp_path)
 
-    task_diff = ["git", "diff", "origin/chore/xcode27...HEAD"]
+    # The Runner's capture helper is refreshed on every branch: it is not the task's code, reviewers never see it.
+    task_diff = ["git", "diff", "origin/chore/xcode27...HEAD", "--", ".", ":(exclude)**/AITaskerCapture.swift"]
     assert task_diff in runner.calls
     assert runner.calls.index(task_diff) > next(i for i, c in enumerate(runner.calls) if c[:2] == ["git", "commit"])
     assert mock_post_callback.await_args.args[1].diff == "diff --git a/A.swift b/A.swift\n+ .bold()\n"

@@ -111,6 +111,7 @@ async def run_job(
     dev_cost: Optional[float] = None
     dev_session: Optional[str] = None
     related: list = []
+    dev_error: Optional[str] = None
     feature = job.feature
     repo_path = feature.repo
     managed = bool(feature.clone_url and repos_dir)
@@ -267,7 +268,11 @@ async def run_job(
 
         outcome = "success"
 
-    except (PreflightError, DevStageError, BuildStageError, TestStageError):
+    except DevStageError as err:
+        logger.exception("Job %s failed", job.job_id)
+        dev_error = err.reason
+        await report(stage, "failed")
+    except (PreflightError, BuildStageError, TestStageError):
         logger.exception("Job %s failed", job.job_id)
         await report(stage, "failed")
     except Exception:
@@ -304,6 +309,7 @@ async def run_job(
         dev_cost_usd=dev_cost,
         dev_session_id=dev_session,
         related_branches=related,
+        dev_error=dev_error,
     )
 
     try:

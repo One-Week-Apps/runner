@@ -55,6 +55,16 @@ export interface IssueJobResult {
   devSessionId?: string | null;
   /** Other unmerged tasks touching the same files. */
   relatedBranches?: { branch: string; files: string[] }[];
+  /** Claude Code did not work at all (usage limit, login…), in its own words. */
+  devError?: string | null;
+}
+
+/** What the developer reads when Claude Code refused to work: the cause first, in plain words. */
+function devRefusal(error: string): string {
+  const cause = /usage limit|rate limit|limit reached|quota/i.test(error) ? "limite d'usage de ton compte Claude atteinte"
+    : /log ?in|auth|credential|token/i.test(error) ? "Claude Code n'est plus connecté sur ce Mac (lance `claude` pour te reconnecter)"
+      : error;
+  return `Claude Code n'a pas pu travailler : ${cause}. Rien n'a été modifié. Réponds KO (par exemple « KO relance ») pour relancer quand c'est réglé.`;
 }
 
 export interface IssueLoopDeps {
@@ -175,6 +185,15 @@ export class IssueLoop {
     let current = result.devSessionId ? task.continuesIn(result.devSessionId) : task;
     const diff = result.diff?.trim() ? result.diff : null;
     if (diff) current = current.changed(changedFiles(diff));
+    // Claude Code refused at once (usage limit, login): nothing to review or fix, the developer must know why.
+    if (result.devError) {
+      this.notices.set(current.key, devRefusal(result.devError));
+      await this.deliver(current, result, captures, lostCaptures, null, null);
+      await this.discover();
+      await this.startNextIfIdle();
+      await this.noticeWaiting();
+      return;
+    }
     // The UX review (the most expensive call) only looks at the task's scenarios, or at everything if none,
     // and only when the developer's plan includes it.
     const ofTask = seen.filter((capture) => capture.forTask);
@@ -190,49 +209,54 @@ export class IssueLoop {
     if (toFix.length > 0 && current.canCorrectInternally(MAX_INTERNAL_ROUNDS)) {
       await this.deps.store.save(current.correctInternally(Corrections.feedback(toFix), toFix.map((point) => point.label)));
     } else {
-      const { repo } = current.tracker;
-      const { baseBranch } = this.deps.config.repos[repo];
-      const alreadyRed = Corrections.preexisting(result.preexistingFailures ?? [], baseBranch);
-      const lesson = await (this.lessonDrafts.get(current.key) ?? Promise.resolve(null));
-      this.lessonDrafts.delete(current.key);
-      await this.deps.tracker.postReport(current.tracker, {
-        attempt: current.shownAttempt, buildStatus: result.buildStatus, testStatus: result.testStatus, captures,
-        ux: ux && { verdict: ux.verdict, remarks: ux.remarks.map((remark) => remark.label) },
-        codeReview: code && { verdict: code.verdict, remarks: code.remarks.map((remark) => remark.label) },
-        failedTests: Corrections.failures(result.failedTests ?? []).map((point) => point.replace(/^Test en échec : /, "")),
-        fixedInternally: current.fixedInternally,
-        internalRounds: current.internalRounds,
-        outOfScope: [
-          ...(alreadyRed ? [{ ...alreadyRed, by: "le Runner (tests déjà rouges sur la base)" }] : []),
-          ...(ux?.outOfScope ?? []).map((remark) => ({ ...remark, by: "la relecture UX" })),
-        ].map(({ label, fix, by }) => ({
-          text: label,
-          fix,
-          newTaskUrl: this.deps.tracker.newTaskUrl(repo, label, `${fix}\n\nRepéré par ${by} sur #${current.tracker.number}.`, this.deps.config.label),
-        })),
-        codeUrl: this.deps.tracker.codeUrl(current.tracker, current.branch, baseBranch),
-        ...(ux?.criteria || code?.criteria ? { criteria: Criteria.merge(ux?.criteria, code?.criteria) } : {}),
-        // Instructions lost on the Runner side (brain down) or on the Mac (not received in time): the stage failed.
-        fallback: current.progress.brief?.status === "failed",
-        ...(this.notices.has(current.key) ? { notice: this.notices.get(current.key) } : {}),
-        trace: { brief: this.lastBriefs.get(current.key)?.trace, review: ux?.trace, code: code?.trace },
-        cost: this.costs.get(current.key),
-        ...(result.relatedBranches?.length ? { relatedBranches: result.relatedBranches } : {}),
-        ...(lostCaptures ? { lostCaptures } : {}),
-        ...(lesson ? { lesson: { text: lesson.text, scope: lesson.scope } } : {}),
-        ...(current.members.length ? { grouped: current.members.map((m) => m.title) } : {}),
-      });
-      this.costs.delete(current.key);
-      this.notices.delete(current.key);
-      // A miss means nobody had flagged anything: if a reviewer asked for a fix, the KO proves them right.
-      const reviews = [["ux", ux], ["code", code]] as const;
-      const ran = reviews.filter(([, review]) => review);
-      const approvedBy: Reviewer[] = ran.every(([, review]) => review!.verdict === "ok") ? ran.map(([reviewer]) => reviewer) : [];
-      await this.deps.store.save(current.finish({ approvedBy, knowledge: ux?.trace?.knowledge ?? code?.trace?.knowledge, lesson }));
+      await this.deliver(current, result, captures, lostCaptures, ux, code);
     }
     await this.discover(); // a task closed during the job must not start
     await this.startNextIfIdle();
     await this.noticeWaiting();
+  }
+
+  /** The report goes to the developer; the task then waits for their reply. */
+  private async deliver(current: TrackedTask, result: IssueJobResult, captures: ReportCapture[], lostCaptures: number, ux: UxReview | null, code: CodeReview | null): Promise<void> {
+    const { repo } = current.tracker;
+    const { baseBranch } = this.deps.config.repos[repo];
+    const alreadyRed = Corrections.preexisting(result.preexistingFailures ?? [], baseBranch);
+    const lesson = await (this.lessonDrafts.get(current.key) ?? Promise.resolve(null));
+    this.lessonDrafts.delete(current.key);
+    await this.deps.tracker.postReport(current.tracker, {
+      attempt: current.shownAttempt, buildStatus: result.buildStatus, testStatus: result.testStatus, captures,
+      ux: ux && { verdict: ux.verdict, remarks: ux.remarks.map((remark) => remark.label) },
+      codeReview: code && { verdict: code.verdict, remarks: code.remarks.map((remark) => remark.label) },
+      failedTests: Corrections.failures(result.failedTests ?? []).map((point) => point.replace(/^Test en échec : /, "")),
+      fixedInternally: current.fixedInternally,
+      internalRounds: current.internalRounds,
+      outOfScope: [
+        ...(alreadyRed ? [{ ...alreadyRed, by: "le Runner (tests déjà rouges sur la base)" }] : []),
+        ...(ux?.outOfScope ?? []).map((remark) => ({ ...remark, by: "la relecture UX" })),
+      ].map(({ label, fix, by }) => ({
+        text: label,
+        fix,
+        newTaskUrl: this.deps.tracker.newTaskUrl(repo, label, `${fix}\n\nRepéré par ${by} sur #${current.tracker.number}.`, this.deps.config.label),
+      })),
+      codeUrl: this.deps.tracker.codeUrl(current.tracker, current.branch, baseBranch),
+      ...(ux?.criteria || code?.criteria ? { criteria: Criteria.merge(ux?.criteria, code?.criteria) } : {}),
+      // Instructions lost on the Runner side (brain down) or on the Mac (not received in time): the stage failed.
+      fallback: current.progress.brief?.status === "failed",
+      ...(this.notices.has(current.key) ? { notice: this.notices.get(current.key) } : {}),
+      trace: { brief: this.lastBriefs.get(current.key)?.trace, review: ux?.trace, code: code?.trace },
+      cost: this.costs.get(current.key),
+      ...(result.relatedBranches?.length ? { relatedBranches: result.relatedBranches } : {}),
+      ...(lostCaptures ? { lostCaptures } : {}),
+      ...(lesson ? { lesson: { text: lesson.text, scope: lesson.scope } } : {}),
+      ...(current.members.length ? { grouped: current.members.map((m) => m.title) } : {}),
+    });
+    this.costs.delete(current.key);
+    this.notices.delete(current.key);
+    // A miss means nobody had flagged anything: if a reviewer asked for a fix, the KO proves them right.
+    const reviews = [["ux", ux], ["code", code]] as const;
+    const ran = reviews.filter(([, review]) => review);
+    const approvedBy: Reviewer[] = ran.every(([, review]) => review!.verdict === "ok") ? ran.map(([reviewer]) => reviewer) : [];
+    await this.deps.store.save(current.finish({ approvedBy, knowledge: ux?.trace?.knowledge ?? code?.trace?.knowledge, lesson }));
   }
 
   private async reviewOf(task: TrackedTask, captures: BrainCapture[]): Promise<UxReview | null> {
