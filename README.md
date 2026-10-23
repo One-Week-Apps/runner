@@ -2,7 +2,7 @@
 
 Runs iOS development tasks on your own Mac with your own Claude Code. You write a task on your phone; the
 Runner implements it, builds the app, runs the UI tests on simulators, takes screenshots and sends you a report.
-You answer **OK** to open the pull request or **KO + one line of feedback** to get another attempt.
+You answer **OK** to merge the work into your base branch or **KO + one line of feedback** to get another attempt.
 
 *[Version française plus bas.](#en-français) · Step-by-step guide (French): [Démarrer avec Studio](https://www.one-week-apps.com/studio/)*
 
@@ -24,7 +24,7 @@ You answer **OK** to open the pull request or **KO + one line of feedback** to g
 5. **Review**: when paired with Studio, One Week Apps Studio reviews the screenshots (UX) and the diff
    (code). The Runner fixes its own findings up to twice before you see anything.
 6. **Report** with screenshots per step and device, failing tests, cost, and a link to the diff.
-7. **Reply** `OK` (pull request opened) or `KO 1.2 : the title is cut` (new attempt on the same branch).
+7. **Reply** `OK` (merged into the base branch) or `KO 1.2 : the title is cut` (new attempt on the same branch).
 
 ## What stays on your Mac, what leaves it
 
@@ -81,6 +81,11 @@ with your Mac: `com.oneweekapps.runner.focus` (orchestrator, port 3939) and `com
 }
 ```
 
+After an `OK`, the Runner squash-merges the task into `baseBranch` (trunk-based), so the next task starts
+from it. If the base changed the same files since the attempt, it first updates the task on top of it, runs
+the build and tests again and sends a short report to approve. Set `"merge": "pr"` on a repository to only
+open the pull request and merge it yourself. A protected base branch falls back to the pull request.
+
 Only `allowedAuthors` can trigger work, since Claude Code runs on your Mac. Environment variables:
 
 | Variable | Default | Purpose |
@@ -124,8 +129,9 @@ and is not part of this repository.
 
 Le Runner développe vos tâches iOS sur votre Mac, avec votre Claude Code. Vous écrivez une tâche depuis votre
 téléphone. Le Runner la code, compile l'app, lance les tests UI sur simulateur, prend des captures et vous
-envoie un rapport. Vous répondez **OK** pour ouvrir la pull request, ou **KO + une ligne de retour** pour une
-nouvelle tentative.
+envoie un rapport. Vous répondez **OK** pour fusionner le travail dans votre branche principale, ou **KO + une ligne de retour**
+pour une nouvelle tentative. Pour fusionner vous-même, mettez `"merge": "pr"` sur le dépôt dans
+`~/.aitasker/config.json` : le Runner ouvre alors seulement la pull request.
 
 Le guide pas à pas : [Démarrer avec Studio](https://www.one-week-apps.com/studio/).
 

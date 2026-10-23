@@ -152,6 +152,68 @@ describe("GitHubIssueTracker", () => {
     expect(existing.calls[1].url).toContain("head=One-Week-Apps%3Aaitasker%2Fissue-7");
   });
 
+  const PR = { "POST /repos/One-Week-Apps/EFB/pulls": () => ({ status: 201, body: { html_url: "https://github.com/One-Week-Apps/EFB/pull/9", number: 9 } }) };
+  const compare = (baseMoved: string[], task: string[]) => ({
+    "GET /repos/One-Week-Apps/EFB/compare/aitasker/issue-7...main": () => ({ status: 200, body: { ahead_by: baseMoved.length, files: baseMoved.map((filename) => ({ filename })) } }),
+    "GET /repos/One-Week-Apps/EFB/compare/main...aitasker/issue-7": () => ({ status: 200, body: { ahead_by: task.length, files: task.map((filename) => ({ filename })) } }),
+  });
+
+  it("merges the task as one squashed commit and deletes its branch", async () => {
+    const gh = fakeGitHub({
+      ...PR, ...compare(["Other/Settings.swift"], ["App/Theme.swift"]),
+      "PUT /repos/One-Week-Apps/EFB/pulls/9/merge": () => ({ status: 200, body: { merged: true } }),
+      "DELETE /repos/One-Week-Apps/EFB/git/refs/heads/aitasker/issue-7": () => ({ status: 204 }),
+    });
+
+    expect(await new GitHubIssueTracker("tok", gh.fetchImpl).merge(TASK, "aitasker/issue-7", "main"))
+      .toEqual({ status: "merged", url: "https://github.com/One-Week-Apps/EFB/pull/9" });
+    const merge = gh.calls.find((c) => c.method === "PUT")!;
+    expect(merge.body).toMatchObject({ merge_method: "squash", commit_title: "Agrandir le bouton (#9)" });
+    expect(gh.calls.at(-1)!.method).toBe("DELETE");
+  });
+
+  it("does not merge when the base changed the same files since the task ran", async () => {
+    const gh = fakeGitHub({ ...PR, ...compare(["App/Theme.swift", "README.md"], ["App/Theme.swift", "App/AITaskerCapture.swift"]) });
+
+    expect(await new GitHubIssueTracker("tok", gh.fetchImpl).merge(TASK, "aitasker/issue-7", "main"))
+      .toEqual({ status: "behind", url: "https://github.com/One-Week-Apps/EFB/pull/9", files: ["App/Theme.swift"] });
+    expect(gh.calls.some((c) => c.method === "PUT")).toBe(false);
+  });
+
+  it("asks for an update on a conflict, and leaves a protected branch to the developer", async () => {
+    const refusing = (state: string) => fakeGitHub({
+      ...PR, ...compare([], ["App/Theme.swift"]),
+      "PUT /repos/One-Week-Apps/EFB/pulls/9/merge": () => ({ status: 405, body: { message: "Pull Request is not mergeable" } }),
+      "GET /repos/One-Week-Apps/EFB/pulls/9": () => ({ status: 200, body: { mergeable_state: state } }),
+    });
+
+    expect(await new GitHubIssueTracker("tok", refusing("dirty").fetchImpl).merge(TASK, "aitasker/issue-7", "main"))
+      .toEqual({ status: "behind", url: "https://github.com/One-Week-Apps/EFB/pull/9", files: [] });
+    expect(await new GitHubIssueTracker("tok", refusing("blocked").fetchImpl).merge(TASK, "aitasker/issue-7", "main"))
+      .toEqual({ status: "refused", url: "https://github.com/One-Week-Apps/EFB/pull/9", reason: "branche protégée ou vérifications exigées" });
+  });
+
+  it("sees a pull request merged by the developer, whatever the way", async () => {
+    const pulls = (mergedAt: string | null) => fakeGitHub({
+      "GET /repos/One-Week-Apps/EFB/pulls": () => ({ status: 200, body: [{ merged_at: mergedAt }] }),
+    });
+    expect(await new GitHubIssueTracker("tok", pulls("2026-10-23T10:00:00Z").fetchImpl).isMerged(TASK, "aitasker/issue-7")).toBe(true);
+    const open = pulls(null);
+    expect(await new GitHubIssueTracker("tok", open.fetchImpl).isMerged(TASK, "aitasker/issue-7")).toBe(false);
+    expect(open.calls[0].url).toContain("state=closed");
+  });
+
+  it("says why a task waits in a comment, and stays quiet when it starts", async () => {
+    const gh = fakeGitHub({ "POST /repos/One-Week-Apps/EFB/issues/7/comments": () => ({ status: 201, body: { id: 1 } }) });
+    const tracker = new GitHubIssueTracker("tok", gh.fetchImpl);
+
+    await tracker.showWaiting(TASK, "Attend « A » : touche aussi Theme.swift.");
+    await tracker.showWaiting(TASK, null);
+
+    expect(gh.calls).toHaveLength(1);
+    expect(gh.calls[0].body.body).toContain("⏳ Attend « A » : touche aussi Theme.swift.");
+  });
+
   it("adds a label", async () => {
     const gh = fakeGitHub({ "POST /repos/One-Week-Apps/EFB/issues/7/labels": () => ({ status: 200, body: [] }) });
     await new GitHubIssueTracker("tok", gh.fetchImpl).addLabel(TASK, "aitasker:validé");

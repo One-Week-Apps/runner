@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
 import type { ComputeAgentClient, TriggerJobPayload } from "../src/adapters/ComputeAgentClient.js";
-import type { IssueTracker, ProgressView, TrackerReply, TrackerTask } from "../src/adapters/IssueTracker.js";
+import type { IssueTracker, MergeOutcome, ProgressView, TrackerReply, TrackerTask } from "../src/adapters/IssueTracker.js";
 import { JobProgress } from "../src/domain/JobProgress.js";
 import { TaskReport, type ReportInput } from "../src/domain/TaskReport.js";
 import { JsonFileTrackedTaskRepository } from "../src/infrastructure/JsonFileTrackedTaskRepository.js";
@@ -55,6 +55,24 @@ class FakeTracker implements IssueTracker {
   async openMergeRequest(task: TrackerTask, branch: string, base: string): Promise<string> {
     this.mergeRequests.push({ key: task.key, branch, base });
     return `https://pr/${task.number}`;
+  }
+  merged = new Set<string>();
+  async isMerged(task: TrackerTask): Promise<boolean> {
+    return this.merged.has(task.key);
+  }
+  waiting: { key: string; reason: string | null }[] = [];
+  async showWaiting(task: TrackerTask, reason: string | null): Promise<void> {
+    this.waiting.push({ key: task.key, reason });
+  }
+  waitingFor(number: number): string | null {
+    return this.waiting.filter((w) => w.key === `One-Week-Apps/EFB#${number}`).at(-1)?.reason ?? null;
+  }
+  merges: { key: string; branch: string; base: string }[] = [];
+  /** What the next merges give, in order; afterwards they succeed. */
+  mergeOutcomes: MergeOutcome[] = [];
+  async merge(task: TrackerTask, branch: string, base: string): Promise<MergeOutcome> {
+    this.merges.push({ key: task.key, branch, base });
+    return this.mergeOutcomes.shift() ?? { status: "merged", url: `https://pr/${task.number}` };
   }
   async addLabel(task: TrackerTask, label: string): Promise<void> {
     this.labels.push({ key: task.key, label });
@@ -322,7 +340,7 @@ describe("IssueLoop: an issue becomes a Runner task", () => {
     expect(tracker.commentsFor(7).at(-1)).toContain("Tentative 2 lancée");
   });
 
-  it("OK: opens the pull request, labels the issue as validated, then stays still", async () => {
+  it("OK: merges into the base branch, labels the issue as validated, then stays still", async () => {
     const { tracker, compute, loop } = setup();
     tracker.open(7);
     await loop.tick();
@@ -332,8 +350,71 @@ describe("IssueLoop: an issue becomes a Runner task", () => {
     await loop.tick();
     await loop.tick();
 
-    expect(tracker.mergeRequests).toEqual([{ key: "One-Week-Apps/EFB#7", branch: "aitasker/issue-7", base: "chore/xcode27" }]);
+    expect(tracker.merges).toEqual([{ key: "One-Week-Apps/EFB#7", branch: "aitasker/issue-7", base: "chore/xcode27" }]);
+    expect(tracker.mergeRequests).toEqual([]);
     expect(tracker.labels).toEqual([{ key: "One-Week-Apps/EFB#7", label: "aitasker:validé" }]);
+    expect(tracker.commentsFor(7).at(-1)).toContain("fusionné dans chore/xcode27");
+    expect(tracker.commentsFor(7).at(-1)).toContain("https://pr/7");
+    expect(compute.jobs).toHaveLength(1);
+  });
+
+  it("OK in pull request mode: opens the pull request and leaves the merge to the developer", async () => {
+    const { tracker, compute, loop } = setup(undefined, {
+      repos: { "One-Week-Apps/EFB": { ...CONFIG.repos["One-Week-Apps/EFB"], merge: "pr" } },
+    });
+    tracker.open(7);
+    await loop.tick();
+    await loop.onJobResult(result(compute.jobs[0].jobId));
+
+    tracker.reply(7, "OK");
+    await loop.tick();
+
+    expect(tracker.mergeRequests).toEqual([{ key: "One-Week-Apps/EFB#7", branch: "aitasker/issue-7", base: "chore/xcode27" }]);
+    expect(tracker.merges).toEqual([]);
+    expect(tracker.labels).toEqual([{ key: "One-Week-Apps/EFB#7", label: "aitasker:validé" }]);
+    expect(tracker.commentsFor(7).at(-1)).toContain("Le travail est en revue : https://pr/7");
+  });
+
+  it("OK after the base changed the same files: updates the task on top of it, then asks again", async () => {
+    const { tracker, compute, loop } = setup();
+    tracker.open(7);
+    tracker.open(9);
+    await loop.tick();
+    await loop.onJobResult(result(compute.jobs[0].jobId));
+    await loop.onJobResult(result(compute.jobs[1].jobId));
+    tracker.mergeOutcomes.push({ status: "behind", url: "https://pr/7", files: ["Theme.swift"] });
+
+    tracker.reply(7, "OK");
+    await loop.tick();
+
+    expect(tracker.labels).toEqual([]);
+    expect(tracker.commentsFor(7).at(-2)).toContain("Theme.swift");
+    expect(compute.jobs).toHaveLength(3);
+    expect(compute.jobs[2].feature).toMatchObject({ branch: "aitasker/issue-7", instruction: "iteration_feedback", attemptNumber: 1 });
+    expect(compute.jobs[2].feature.lastFeedback).toContain("chore/xcode27");
+
+    await loop.onJobResult(result(compute.jobs[2].jobId));
+    expect(tracker.commentsFor(7).at(-1)).toContain("**Tentative 1** · Build ✅ · Tests ✅");
+    expect(tracker.commentsFor(7).at(-1)).toContain("Remis à jour sur chore/xcode27");
+
+    tracker.reply(7, "OK");
+    await loop.tick();
+    expect(tracker.merges).toHaveLength(2);
+    expect(tracker.labels).toEqual([{ key: "One-Week-Apps/EFB#7", label: "aitasker:validé" }]);
+  });
+
+  it("OK on a branch the Runner may not merge into: validates and leaves the pull request to the developer", async () => {
+    const { tracker, compute, loop } = setup();
+    tracker.open(7);
+    await loop.tick();
+    await loop.onJobResult(result(compute.jobs[0].jobId));
+    tracker.mergeOutcomes.push({ status: "refused", url: "https://pr/7", reason: "branche protégée" });
+
+    tracker.reply(7, "OK");
+    await loop.tick();
+
+    expect(tracker.labels).toEqual([{ key: "One-Week-Apps/EFB#7", label: "aitasker:validé" }]);
+    expect(tracker.commentsFor(7).at(-1)).toContain("Fusion automatique impossible (branche protégée)");
     expect(tracker.commentsFor(7).at(-1)).toContain("https://pr/7");
     expect(compute.jobs).toHaveLength(1);
   });
@@ -1253,5 +1334,168 @@ describe("IssueLoop: Studio plans and quotas", () => {
     expect(brain.reviews).toEqual([]);
     expect(brain.codeReviews).toHaveLength(1);
     expect(tracker.reports[0].captures).toHaveLength(1);
+  });
+});
+
+/** Studio's reading of each task, by title: what it touches and, sometimes, a question. */
+class ScreenBrain extends FakeBrain {
+  byTitle: Record<string, Partial<Brief>> = {};
+  async brief(request: BriefRequest): Promise<Brief> {
+    const brief = await super.brief(request);
+    const known = Object.entries(this.byTitle).find(([title]) => request.title.startsWith(title));
+    return { ...brief, ...(known?.[1] ?? {}) };
+  }
+}
+
+const on = (screen: string, size: "s" | "m" | "l" = "m", files: string[] = []) =>
+  ({ footprint: { screens: [screen], files, shared: false, size } });
+
+describe("IssueLoop: one Runner, several prepared tasks", () => {
+  function scheduled(byTitle: Record<string, Partial<Brief>>, config: Partial<IssueLoopConfig> = {}) {
+    const brain = new ScreenBrain();
+    brain.byTitle = byTitle;
+    return { brain, ...setup(brain, config) };
+  }
+
+  it("prepares a waiting task while the Runner works, then starts it with those instructions", async () => {
+    const { brain, tracker, compute, loop } = scheduled({ "Tâche 9": on("Niveaux") });
+    tracker.open(7);
+    tracker.open(9);
+    await loop.tick();
+    expect(brain.briefs.map((b) => b.title)).toEqual(["Tâche 7", "Tâche 9"]);
+
+    await loop.onJobResult(result(compute.jobs[0].jobId));
+
+    expect(compute.jobs[1].feature.branch).toBe("aitasker/issue-9");
+    expect(brain.briefs).toHaveLength(2);
+    expect(loop.instructionsFor(compute.jobs[1].jobId)).toMatchObject({ instructions: "CONSIGNES pour « Tâche 9 »" });
+  });
+
+  it("holds a task touching the same screen as one awaiting a reply, and runs the next one meanwhile", async () => {
+    const { tracker, compute, loop } = scheduled({ "Tâche 7": on("Niveaux"), "Tâche 9": on("Niveaux"), "Tâche 11": on("Réglages") });
+    tracker.open(7);
+    tracker.open(9);
+    tracker.open(11);
+    await loop.tick();
+    await loop.tick();
+
+    await loop.onJobResult(result(compute.jobs[0].jobId));
+
+    expect(compute.jobs[1].feature.branch).toBe("aitasker/issue-11");
+    expect(tracker.waitingFor(9)).toBe("Attend « Tâche 7 » : touche aussi l'écran Niveaux.");
+
+    tracker.reply(7, "OK");
+    await loop.tick();
+    await loop.onJobResult(result(compute.jobs[1].jobId));
+    expect(compute.jobs[2].feature.branch).toBe("aitasker/issue-9");
+    expect(tracker.waitingFor(9)).toBeNull();
+  });
+
+  it("holds on the files the delivered attempt really changed", async () => {
+    const { tracker, compute, loop } = scheduled({ "Tâche 7": on("Accueil"), "Tâche 9": on("Niveaux", "m", ["Theme.swift"]) });
+    tracker.open(7);
+    tracker.open(9);
+    await loop.tick();
+
+    await loop.onJobResult({ ...result(compute.jobs[0].jobId), diff: "diff --git a/App/Theme.swift b/App/Theme.swift\n+let x = 1\n" });
+
+    expect(compute.jobs).toHaveLength(1);
+    expect(tracker.waitingFor(9)).toBe("Attend « Tâche 7 » : touche aussi Theme.swift.");
+  });
+
+  it("groups small tasks on the same screen into one attempt, one report and one reply", async () => {
+    const { brain, tracker, compute, loop } = scheduled({ "Tâche 9": on("Niveaux", "s"), "Tâche 11": on("Niveaux", "s") });
+    tracker.open(7);
+    tracker.open(9);
+    tracker.open(11);
+    await loop.tick();
+    await loop.tick();
+
+    await loop.onJobResult(result(compute.jobs[0].jobId));
+
+    expect(compute.jobs).toHaveLength(2);
+    expect(compute.jobs[1].feature.title).toBe("Tâche 9 (+ 1 consigne regroupée) (#9)");
+    expect(brain.briefs.at(-1)!.body).toContain("Consigne regroupée 2 : Tâche 11");
+    expect(tracker.waitingFor(11)).toContain("Regroupée avec « Tâche 9 »");
+
+    await loop.onJobResult(result(compute.jobs[1].jobId));
+    expect(tracker.commentsFor(9).at(-1)).toContain("🧩 Regroupe aussi : Tâche 11");
+    expect(compute.jobs).toHaveLength(2);
+
+    tracker.reply(9, "OK");
+    await loop.tick();
+    expect(tracker.labels.map((l) => l.key)).toEqual(["One-Week-Apps/EFB#9", "One-Week-Apps/EFB#11"]);
+    expect(tracker.commentsFor(11).at(-1)).toContain("Validé avec « Tâche 9 »");
+  });
+
+  it("puts a grouped task back in the queue when the carrying one is closed", async () => {
+    const { tracker, compute, loop } = scheduled({ "Tâche 9": on("Niveaux", "s"), "Tâche 11": on("Niveaux", "s") });
+    tracker.open(7);
+    tracker.open(9);
+    tracker.open(11);
+    await loop.tick();
+    await loop.tick();
+    await loop.onJobResult(result(compute.jobs[0].jobId));
+    await loop.onJobResult(result(compute.jobs[1].jobId));
+
+    tracker.close(9);
+    await loop.tick();
+
+    expect(compute.jobs.at(-1)!.feature.branch).toBe("aitasker/issue-11");
+  });
+
+  it("asks Studio's question before running, and runs with the developer's answer", async () => {
+    const { brain, tracker, compute, loop } = scheduled({ "Tâche 9": { question: "Le titre coupé, c'est en XXXL ou partout ?" } });
+    tracker.open(7);
+    tracker.open(9);
+    await loop.tick();
+    expect(tracker.commentsFor(9).at(-1)).toContain("Studio demande : Le titre coupé, c'est en XXXL ou partout ?");
+
+    await loop.onJobResult(result(compute.jobs[0].jobId));
+    expect(compute.jobs).toHaveLength(1);
+    expect(tracker.waitingFor(9)).toBe("Studio demande : Le titre coupé, c'est en XXXL ou partout ?");
+
+    tracker.reply(9, "Partout");
+    await loop.tick();
+    expect(compute.jobs[1].feature.branch).toBe("aitasker/issue-9");
+    expect(brain.briefs.at(-1)!.body).toContain("Précision du développeur : Partout");
+  });
+
+  it("pull request mode: a validated task holds its screen until the developer merges it", async () => {
+    const { tracker, compute, loop } = scheduled({ "Tâche 7": on("Niveaux"), "Tâche 9": on("Niveaux") }, {
+      repos: { "One-Week-Apps/EFB": { ...CONFIG.repos["One-Week-Apps/EFB"], merge: "pr" } },
+    });
+    tracker.open(7);
+    tracker.open(9);
+    await loop.tick();
+    await loop.onJobResult(result(compute.jobs[0].jobId));
+
+    tracker.reply(7, "OK");
+    await loop.tick();
+    expect(compute.jobs).toHaveLength(1);
+    expect(tracker.waitingFor(9)).toBe("Attend que tu fusionnes « Tâche 7 » : touche aussi l'écran Niveaux.");
+
+    tracker.merged.add("One-Week-Apps/EFB#7");
+    await loop.tick();
+    expect(compute.jobs[1].feature.branch).toBe("aitasker/issue-9");
+  });
+
+  it("follows the order the developer gave the queue", async () => {
+    const { tracker, compute, loop } = setup();
+    tracker.open(7);
+    tracker.open(9);
+    tracker.open(11);
+    tracker.issues.find((i) => i.number === 7)!.rank = 0;
+    tracker.issues.find((i) => i.number === 9)!.rank = 1;
+    tracker.issues.find((i) => i.number === 11)!.rank = 2;
+    await loop.tick();
+    // Reordered in Focus while task 7 runs.
+    tracker.issues.find((i) => i.number === 11)!.rank = 0.5;
+    await loop.tick();
+
+    await loop.onJobResult(result(compute.jobs[0].jobId));
+
+    expect(compute.jobs[0].feature.branch).toBe("aitasker/issue-7");
+    expect(compute.jobs[1].feature.branch).toBe("aitasker/issue-11");
   });
 });

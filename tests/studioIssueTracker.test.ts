@@ -56,6 +56,34 @@ describe("StudioIssueTracker: the Runner picks up tasks from the Focus app", () 
     expect(JSON.stringify(query.body)).toContain('"stringValue":"One-Week-Apps/EFB"');
   });
 
+  it("keeps the order the developer gave the queue in Focus", async () => {
+    const fb = fakeFirebase({
+      [`POST ${DOCS}:runQuery`]: () => [
+        { document: { name: `${DOCS}/tasks/t1`, fields: encodeFields({ number: 3, title: "Agrandir le bouton", body: "", repo: "One-Week-Apps/EFB", open: true, rank: 2 }) } },
+      ],
+    });
+    const tracker = new StudioIssueTracker(fb.session, undefined, fb.fetchImpl, NOW);
+    expect(await tracker.pendingTasks("One-Week-Apps/EFB")).toEqual([{ ...TASK, rank: 2 }]);
+  });
+
+  it("shows why a task waits on the task itself, and clears it when it starts", async () => {
+    const fb = fakeFirebase();
+    const tracker = new StudioIssueTracker(fb.session, undefined, fb.fetchImpl, NOW);
+
+    await tracker.showWaiting(TASK, "Attend « A » : touche aussi l'écran Niveaux.");
+    await tracker.showWaiting(TASK, null);
+
+    const [held, cleared] = fb.firestoreCalls();
+    expect(held.url).toContain("/tasks/t1?");
+    expect(decodeFields(held.body.fields)).toMatchObject({ waiting: "Attend « A » : touche aussi l'écran Niveaux." });
+    expect(decodeFields(cleared.body.fields)).toMatchObject({ waiting: null });
+  });
+
+  it("holds nothing when it cannot see merges (no code host)", async () => {
+    const fb = fakeFirebase();
+    expect(await new StudioIssueTracker(fb.session, undefined, fb.fetchImpl, NOW).isMerged(TASK, "b")).toBe(true);
+  });
+
   it("writes structured progress on the task for the app to watch live", async () => {
     const fb = fakeFirebase();
     const tracker = new StudioIssueTracker(fb.session, undefined, fb.fetchImpl, NOW);
@@ -112,6 +140,7 @@ describe("StudioIssueTracker: the Runner picks up tasks from the Focus app", () 
       [`GET ${DOCS}/tasks/t1/replies`]: () => ({ documents: [
         { name: `${DOCS}/tasks/t1/replies/r1`, fields: encodeFields({ kind: "ko", feedback: "1.2 : trop petit" }) },
         { name: `${DOCS}/tasks/t1/replies/r2`, fields: encodeFields({ kind: "ok", feedback: "" }) },
+        { name: `${DOCS}/tasks/t1/replies/r3`, fields: encodeFields({ kind: "answer", feedback: " Partout " }) },
       ] }),
     });
     const tracker = new StudioIssueTracker(fb.session, undefined, fb.fetchImpl, NOW);
@@ -119,8 +148,9 @@ describe("StudioIssueTracker: the Runner picks up tasks from the Focus app", () 
     expect(await tracker.repliesAfter(TASK, null)).toEqual([
       { id: "r1", author: "u1", body: "KO 1.2 : trop petit" },
       { id: "r2", author: "u1", body: "OK" },
+      { id: "r3", author: "u1", body: "Partout" },
     ]);
-    expect(await tracker.repliesAfter(TASK, "r1")).toEqual([{ id: "r2", author: "u1", body: "OK" }]);
+    expect(await tracker.repliesAfter(TASK, "r2")).toEqual([{ id: "r3", author: "u1", body: "Partout" }]);
     expect(fb.firestoreCalls()[0].url).toContain("orderBy=createdAt");
   });
 
@@ -142,6 +172,8 @@ describe("StudioIssueTracker: the Runner picks up tasks from the Focus app", () 
     const prs: unknown[][] = [];
     const host: CodeHost = {
       openPullRequest: async (...args) => { prs.push(args); return "https://github.com/pr/1"; },
+      mergePullRequest: async () => ({ status: "merged", url: "https://github.com/pr/1" }),
+      pullRequestMerged: async () => true,
       codeUrl: (_t, branch, base) => `https://github.com/compare/${base}...${branch}`,
     };
     const tracker = new StudioIssueTracker(fb.session, host, fb.fetchImpl, NOW);
@@ -158,7 +190,24 @@ describe("StudioIssueTracker: the Runner picks up tasks from the Focus app", () 
     const fb = fakeFirebase();
     const tracker = new StudioIssueTracker(fb.session, undefined, fb.fetchImpl, NOW);
     expect(await tracker.openMergeRequest(TASK, "aitasker/tache-3", "main")).toBe("la branche aitasker/tache-3");
+    expect(await tracker.merge(TASK, "aitasker/tache-3", "main"))
+      .toEqual({ status: "refused", url: "la branche aitasker/tache-3", reason: "pas d'accès GitHub sur ce Mac" });
     expect(tracker.codeUrl(TASK, "b", "main")).toBe("");
+  });
+
+  it("merges at the code host after an OK", async () => {
+    const fb = fakeFirebase();
+    const merges: unknown[][] = [];
+    const host: CodeHost = {
+      openPullRequest: async () => "https://github.com/pr/1",
+      mergePullRequest: async (...args) => { merges.push(args); return { status: "merged", url: "https://github.com/pr/1" }; },
+      pullRequestMerged: async () => true,
+      codeUrl: () => "",
+    };
+    const tracker = new StudioIssueTracker(fb.session, host, fb.fetchImpl, NOW);
+
+    expect(await tracker.merge(TASK, "aitasker/tache-3", "main")).toEqual({ status: "merged", url: "https://github.com/pr/1" });
+    expect(merges[0].slice(0, 4)).toEqual(["One-Week-Apps/EFB", "aitasker/tache-3", "main", "Agrandir le bouton"]);
   });
 
   it("turns an out-of-scope remark into a thought to sort in Focus", () => {

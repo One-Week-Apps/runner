@@ -1,13 +1,15 @@
-import type { IssueTracker, ProgressView, TrackerReply, TrackerTask } from "../../adapters/IssueTracker.js";
+import type { IssueTracker, MergeOutcome, ProgressView, TrackerReply, TrackerTask } from "../../adapters/IssueTracker.js";
 import type { ReportInput } from "../../domain/TaskReport.js";
 import { RUNNER_MARKER } from "../../domain/Reply.js";
 import { VALIDATED_LABEL } from "../../usecases/IssueLoop.js";
 import { decodeFields, encodeFields, FirestoreTimestamp, type Fields } from "./firestoreValues.js";
 import { endpoints, type StudioSession } from "./StudioSession.js";
 
-/** Where the code lives: GitHub opens the pull request after an OK and shows the diff. Without it, the work stays on the pushed branch. */
+/** Where the code lives: GitHub merges (or opens the pull request) after an OK and shows the diff. Without it, the work stays on the pushed branch. */
 export interface CodeHost {
   openPullRequest(repo: string, branch: string, baseBranch: string, title: string, body: string): Promise<string>;
+  mergePullRequest(repo: string, branch: string, baseBranch: string, title: string, body: string): Promise<MergeOutcome>;
+  pullRequestMerged(repo: string, branch: string): Promise<boolean>;
   codeUrl(task: TrackerTask, branch: string, baseBranch: string): string;
 }
 
@@ -90,10 +92,11 @@ export class StudioIssueTracker implements IssueTracker {
     });
     return rows.filter((row) => row.document).map(({ document }) => {
       const id = document!.name.split("/").pop()!;
-      const data = decodeFields(document!.fields ?? {}) as { number: number; title: string; body?: string; followUpOf?: string };
+      const data = decodeFields(document!.fields ?? {}) as { number: number; title: string; body?: string; followUpOf?: string; rank?: number };
       return {
         key: `${STUDIO_KEY_PREFIX}${id}`, repo, number: data.number, title: data.title, body: data.body ?? "",
         author: this.session.uid, url: `${FOCUS_SCHEME}task/${id}`, ...(data.followUpOf ? { followUp: true } : {}),
+        ...(typeof data.rank === "number" ? { rank: data.rank } : {}),
       };
     });
   }
@@ -147,13 +150,14 @@ export class StudioIssueTracker implements IssueTracker {
       pageToken = page?.nextPageToken;
     } while (pageToken);
     const replies = documents.map((document) => {
-      const data = decodeFields(document.fields ?? {}) as { kind: "ok" | "ko"; feedback?: string; extras?: string[] };
+      const data = decodeFields(document.fields ?? {}) as { kind: "ok" | "ko" | "answer"; feedback?: string; extras?: string[] };
       // A KO also carries the suggestions added with it: they all go into the same attempt.
       const lines = [(data.feedback ?? "").trim(), ...(data.extras ?? []).map((extra) => `- ${extra.trim()}`)].filter(Boolean);
       return {
         id: document.name.split("/").pop()!,
         author: this.session.uid,
-        body: data.kind === "ok" ? "OK" : `KO ${lines.join("\n")}`,
+        // `answer`: the developer's answer to Studio's question, read as plain text.
+        body: data.kind === "ok" ? "OK" : data.kind === "answer" ? (data.feedback ?? "").trim() : `KO ${lines.join("\n")}`,
       };
     });
     const start = cursor === null ? 0 : replies.findIndex((r) => r.id === cursor) + 1;
@@ -162,10 +166,26 @@ export class StudioIssueTracker implements IssueTracker {
 
   async openMergeRequest(task: TrackerTask, branch: string, baseBranch: string): Promise<string> {
     if (!this.codeHost) return `la branche ${branch}`;
-    return this.codeHost.openPullRequest(
-      task.repo, branch, baseBranch, task.title,
-      `${task.body ? `${task.body}\n\n` : ""}Tâche n°${task.number} de One Week Apps Focus, développée par le Runner et validée depuis l'app.`,
-    );
+    return this.codeHost.openPullRequest(task.repo, branch, baseBranch, task.title, this.pullRequestBody(task));
+  }
+
+  async merge(task: TrackerTask, branch: string, baseBranch: string): Promise<MergeOutcome> {
+    if (!this.codeHost) return { status: "refused", url: `la branche ${branch}`, reason: "pas d'accès GitHub sur ce Mac" };
+    return this.codeHost.mergePullRequest(task.repo, branch, baseBranch, task.title, this.pullRequestBody(task));
+  }
+
+  /** Without a code host the Runner cannot see the merge: the task does not hold anything. */
+  async isMerged(task: TrackerTask, branch: string): Promise<boolean> {
+    return this.codeHost ? this.codeHost.pullRequestMerged(task.repo, branch) : true;
+  }
+
+  /** Focus shows it on the task, live; null once it starts. */
+  async showWaiting(task: TrackerTask, reason: string | null): Promise<void> {
+    await this.patch(`tasks/${this.taskId(task)}`, { waiting: reason, updatedAt: this.stamp() });
+  }
+
+  private pullRequestBody(task: TrackerTask): string {
+    return `${task.body ? `${task.body}\n\n` : ""}Tâche n°${task.number} de One Week Apps Focus, développée par le Runner et validée depuis l'app.`;
   }
 
   async addLabel(task: TrackerTask, label: string): Promise<void> {

@@ -4,7 +4,7 @@ import type { StudioConfig } from "./studio/StudioSession.js";
 
 const repos = z.record(
   z.string().regex(/^[\w.-]+\/[\w.-]+$/, "expected a repository as owner/name"),
-  z.object({ baseBranch: z.string().min(1), cloneUrl: z.string().url().optional() }),
+  z.object({ baseBranch: z.string().min(1), cloneUrl: z.string().url().optional(), merge: z.enum(["trunk", "pr"]).default("trunk") }),
 );
 
 const githubSchema = z.object({
@@ -35,14 +35,18 @@ export type RunnerConfig =
 export interface RepoConfig {
   baseBranch: string;
   cloneUrl: string;
+  /** After an OK: the Runner merges into the base (`trunk`), or only opens the pull request (`pr`). */
+  merge: MergeMode;
 }
+
+export type MergeMode = "trunk" | "pr";
 
 export function parseRunnerConfig(raw: unknown): RunnerConfig {
   const parsed = z.discriminatedUnion("tracker", [githubSchema, studioSchema]).parse(raw);
   const withClones = Object.fromEntries(
     Object.entries(parsed.repos).map(([slug, repo]) => [
       slug,
-      { baseBranch: repo.baseBranch, cloneUrl: repo.cloneUrl ?? `https://github.com/${slug}.git` },
+      { baseBranch: repo.baseBranch, cloneUrl: repo.cloneUrl ?? `https://github.com/${slug}.git`, merge: repo.merge },
     ]),
   );
   return { ...parsed, repos: withClones };

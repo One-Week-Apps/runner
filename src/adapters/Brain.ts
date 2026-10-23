@@ -54,6 +54,23 @@ export interface Brief {
   fallback?: true;
   /** Reviews the developer's plan includes; the Runner skips the others instead of sending screenshots for nothing. */
   reviews?: { ux: boolean };
+  /** What the task will touch, predicted before it runs: the Runner groups or holds overlapping tasks. */
+  footprint?: Footprint;
+  /** The task is too ambiguous to run: asked to the developer before any attempt. */
+  question?: string;
+}
+
+/** Task size, from a label or a color (s) to a new screen (l). */
+export type TaskSize = "s" | "m" | "l";
+
+export interface Footprint {
+  /** Target screens, named as in the criteria ("Niveaux"). */
+  screens: string[];
+  /** Files it will likely change (names only), when the task says enough to guess them. */
+  files?: string[];
+  /** Touches code shared by several screens (navigation, global theme, startup, data). */
+  shared: boolean;
+  size: TaskSize;
 }
 
 export interface ReviewRequest {

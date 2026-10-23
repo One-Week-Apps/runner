@@ -72,7 +72,8 @@ export interface ReportInput {
   /** A lesson the brain offers to learn after the reviewers missed something. */
   lesson?: { text: string; scope: string };
   /** Estimated cost of the delivery in dollars (list prices): brain calls plus Claude Code's work. */
-  cost?: { brain: number; dev: number };
+  cost?: { brain: number; dev: number };  /** Other tasks' consignes carried by this attempt (same screen): one report and one reply for all. */
+  grouped?: string[];
 }
 
 interface Provenance {
@@ -138,6 +139,10 @@ export const TaskReport = {
       `🤖 **Tentative ${input.attempt}** · Build ${ICON[input.buildStatus]} · Tests ${ICON[input.testStatus]} · ${scenarios.length} scénario${plural}${rounds ? ` · ${corrections}` : ""}`,
       "",
     ];
+
+    if (input.grouped?.length) {
+      lines.push(`🧩 Regroupe aussi : ${input.grouped.map(escape).join(" · ")}. Ta réponse vaut pour toutes.`, "");
+    }
 
     if (input.notice) {
       lines.push(`ℹ️ ${escape(input.notice)}`, "");

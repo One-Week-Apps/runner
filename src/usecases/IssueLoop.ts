@@ -11,6 +11,7 @@ import { lessonScope } from "../domain/TaskReport.js";
 import type { Stage, StageStatus } from "../domain/JobProgress.js";
 import { Corrections } from "../domain/Corrections.js";
 import { Criteria } from "../domain/Criteria.js";
+import { Scheduler } from "../domain/Scheduler.js";
 
 export const VALIDATED_LABEL = "aitasker:validé";
 /** Fix rounds the Runner allows itself before delivering, on its own remarks and failing tests. */
@@ -20,7 +21,8 @@ export interface IssueLoopConfig {
   label: string;
   allowedAuthors: string[];
   callbackBaseUrl: string;
-  repos: Record<string, { baseBranch: string; cloneUrl: string }>;
+  /** `merge` absent: trunk-based, the Runner merges after an OK. */
+  repos: Record<string, { baseBranch: string; cloneUrl: string; merge?: "trunk" | "pr" }>;
   /** Resume Claude Code's session from one run to the next. Off by default: measured more expensive ($0.77–1.07 per resumed run vs ~$0.65 for a fresh one). */
   resumeDevSession?: boolean;
 }
@@ -100,6 +102,10 @@ export class IssueLoop {
   private readonly lessonDrafts = new Map<string, Promise<Lesson | null>>();
   /** Why Studio declined part of the current delivery (quota, plan), shown as is in the report. */
   private readonly notices = new Map<string, string>();
+  /** Instructions Studio wrote while the task waited: its first attempt starts with them. */
+  private readonly prepared = new Map<string, Brief>();
+  /** The repository of the last attempt: at equal rank, staying on it saves a clone and a cold build. */
+  private lastRepo: string | null = null;
 
   constructor(private readonly deps: IssueLoopDeps) {
     this.now = deps.now ?? (() => new Date().toISOString());
@@ -109,8 +115,10 @@ export class IssueLoop {
   async tick(): Promise<void> {
     await this.discover();
     await this.readReplies();
+    await this.releaseMerged();
     await this.startNextIfIdle();
     await this.noticeWaiting();
+    await this.prepareNext();
   }
 
   /** A job stage started or finished: the progress comment is updated in place. */
@@ -166,6 +174,7 @@ export class IssueLoop {
 
     let current = result.devSessionId ? task.continuesIn(result.devSessionId) : task;
     const diff = result.diff?.trim() ? result.diff : null;
+    if (diff) current = current.changed(changedFiles(diff));
     // The UX review (the most expensive call) only looks at the task's scenarios, or at everything if none,
     // and only when the developer's plan includes it.
     const ofTask = seen.filter((capture) => capture.forTask);
@@ -211,6 +220,7 @@ export class IssueLoop {
         ...(result.relatedBranches?.length ? { relatedBranches: result.relatedBranches } : {}),
         ...(lostCaptures ? { lostCaptures } : {}),
         ...(lesson ? { lesson: { text: lesson.text, scope: lesson.scope } } : {}),
+        ...(current.members.length ? { grouped: current.members.map((m) => m.title) } : {}),
       });
       this.costs.delete(current.key);
       this.notices.delete(current.key);
@@ -230,7 +240,7 @@ export class IssueLoop {
     try {
       const criteria = this.lastBriefs.get(task.key)?.criteria;
       return await this.deps.brain.review({
-        task: task.key, app: appOf(task), title: task.tracker.title, body: task.tracker.body, captures, followUp: task.tracker.followUp,
+        task: task.key, app: appOf(task), title: task.title, body: task.body, captures, followUp: task.tracker.followUp,
         ...(criteria ? { criteria } : {}), ...feedbackOf(task),
       });
     } catch (error) {
@@ -243,7 +253,7 @@ export class IssueLoop {
     if (!this.deps.brain || !diff) return null;
     try {
       const criteria = this.lastBriefs.get(task.key)?.criteria;
-      return await this.deps.brain.reviewCode({ task: task.key, app: appOf(task), title: task.tracker.title, body: task.tracker.body, diff, ...feedbackOf(task), ...(criteria ? { criteria } : {}) });
+      return await this.deps.brain.reviewCode({ task: task.key, app: appOf(task), title: task.title, body: task.body, diff, ...feedbackOf(task), ...(criteria ? { criteria } : {}) });
     } catch (error) {
       this.failed(task, "Code review", error);
       return null;
@@ -270,7 +280,7 @@ export class IssueLoop {
     if (!this.deps.brain) return raw;
     try {
       return await this.deps.brain.brief({
-        task: task.key, app: appOf(task), title: task.tracker.title, body: task.tracker.body, attempt: task.shownAttempt + 1, feedback: task.lastFeedback,
+        task: task.key, app: appOf(task), title: task.title, body: task.body, attempt: task.shownAttempt + 1, feedback: task.lastFeedback,
       });
     } catch (error) {
       this.failed(task, "Instructions", error);
@@ -289,6 +299,8 @@ export class IssueLoop {
       const open = await this.deps.tracker.pendingTasks(repo, this.deps.config.label);
       const openKeys = new Set(open.map((issue) => issue.key));
       for (const issue of open) {
+        const tracked = tasks.find((t) => t.key === issue.key);
+        if (tracked?.is("queued") && tracked.reranked(issue.rank) !== tracked) await this.deps.store.save(tracked.reranked(issue.rank));
         if (known.has(issue.key) || !this.isAllowed(issue.author)) continue;
         await this.deps.store.save(TrackedTask.discover(issue, this.now()));
         known.add(issue.key);
@@ -297,6 +309,7 @@ export class IssueLoop {
         if (task.tracker.repo !== repo || openKeys.has(task.key) || !this.deps.tracker.tracks(task.key)) continue;
         const abandoned = task.abandon();
         if (abandoned !== task) await this.deps.store.save(abandoned);
+        if (abandoned !== task) await this.releaseMembers(abandoned);
       }
     }
   }
@@ -304,6 +317,10 @@ export class IssueLoop {
   private async readReplies(): Promise<void> {
     for (let task of await this.deps.store.all()) {
       if (!this.deps.tracker.tracks(task.key)) continue;
+      if (task.is("queued") && task.pendingQuestion) {
+        await this.deps.store.save(await this.readAnswer(task));
+        continue;
+      }
       const forgetting = task.is("validated") && task.canForgetAt(this.now());
       if (!task.is("awaiting_reply") && !forgetting) continue;
       for (const reply of await this.deps.tracker.repliesAfter(task.tracker, task.replyCursor)) {
@@ -336,7 +353,7 @@ export class IssueLoop {
     if (!this.deps.brain) return null;
     try {
       return await this.deps.brain.proposeLesson({
-        task: task.key, app: appOf(task), title: task.tracker.title, body: task.tracker.body, feedback: miss.feedback, reviewers: miss.reviewers,
+        task: task.key, app: appOf(task), title: task.title, body: task.body, feedback: miss.feedback, reviewers: miss.reviewers,
         source: `${task.key} · ${miss.at.slice(0, 10)}`,
       });
     } catch (error) {
@@ -372,33 +389,133 @@ export class IssueLoop {
     return task.lessonForgotten();
   }
 
+  /** OK: trunk-based by default, the work lands in the base so the next tasks start from it. */
   private async validate(task: TrackedTask): Promise<TrackedTask> {
-    const { baseBranch } = this.deps.config.repos[task.tracker.repo];
-    const url = await this.deps.tracker.openMergeRequest(task.tracker, task.branch, baseBranch);
+    const { baseBranch, merge = "trunk" } = this.deps.config.repos[task.tracker.repo];
+    if (merge === "pr") {
+      const url = await this.deps.tracker.openMergeRequest(task.tracker, task.branch, baseBranch);
+      return this.approve(task, `✅ Validé. Le travail est en revue : ${url}`, true);
+    }
+    const outcome = await this.deps.tracker.merge(task.tracker, task.branch, baseBranch);
+    if (outcome.status === "behind") {
+      const what = outcome.files.length ? `les mêmes fichiers (${outcome.files.map((f) => f.split("/").pop()).join(", ")})` : "le même code";
+      await this.deps.tracker.comment(task.tracker, note(
+        `🔀 ${baseBranch} a changé ${what} depuis cette tentative. Je remets la tâche à jour par-dessus, je relance le build et les tests, puis je te renvoie le rapport à valider.`,
+      ));
+      return task.correctInternally(
+        `Intègre les derniers changements de ${baseBranch} (déjà fusionnés dans la branche au démarrage) : résous les conflits éventuels en gardant le comportement validé, sans rien changer d'autre.`,
+        [`Remis à jour sur ${baseBranch}`],
+      );
+    }
+    return outcome.status === "merged"
+      ? this.approve(task, `✅ Validé et fusionné dans ${baseBranch} : ${outcome.url}`)
+      : this.approve(task, `✅ Validé. Fusion automatique impossible (${outcome.reason}) : la PR t'attend : ${outcome.url}`, true);
+  }
+
+  /** `awaitingMerge`: the pull request waits for the developer, and the task holds its screens and files until then. */
+  private async approve(task: TrackedTask, line: string, awaitingMerge = false): Promise<TrackedTask> {
     await this.deps.tracker.addLabel(task.tracker, VALIDATED_LABEL);
+    for (const member of (await this.deps.store.all()).filter((t) => t.groupedInto === task.key && t.is("grouped"))) {
+      await this.deps.tracker.addLabel(member.tracker, VALIDATED_LABEL);
+      await this.deps.tracker.comment(member.tracker, note(`✅ Validé avec « ${task.tracker.title} ».`));
+      await this.deps.store.save(member.validate(null, this.now(), awaitingMerge));
+    }
     const learned = await this.learn(task);
     const lessonLine = learned
       ? `\n\n📚 Retenu pour ${lessonScope(learned.scope)} : ${learned.text}\nRéponds \`OUBLIE\` pour la retirer.`
       : "";
-    await this.deps.tracker.comment(task.tracker, note(`✅ Validé. Le travail est en revue : ${url}${lessonLine}`));
-    return task.validate(learned, this.now());
+    await this.deps.tracker.comment(task.tracker, note(`${line}${lessonLine}`));
+    return task.validate(learned, this.now(), awaitingMerge);
   }
 
-  private async startNextIfIdle(): Promise<void> {
+  /** What the running task touches, from its instructions: the waiting ones are held or grouped against it. */
+  private async remember(jobId: string, brief: Brief): Promise<void> {
+    if (!brief.footprint) return;
+    const running = (await this.deps.store.all()).find((t) => t.runsJob(jobId));
+    if (running) await this.deps.store.save(running.preparedWith(brief.footprint, null));
+  }
+
+  /** The developer's answer to Studio's question: the task is read again with it before it runs. */
+  private async readAnswer(task: TrackedTask): Promise<TrackedTask> {
+    for (const reply of await this.deps.tracker.repliesAfter(task.tracker, task.replyCursor)) {
+      task = task.readUpTo(reply.id);
+      if (!this.isAllowed(reply.author) || reply.body.includes(RUNNER_MARKER)) continue;
+      const answer = reply.body.trim().replace(/^(KO|réponse)\s*:?\s*/i, "");
+      if (!answer) continue;
+      this.prepared.delete(task.key);
+      return task.answered(answer);
+    }
+    return task;
+  }
+
+  /** Pull request mode: once the developer merged, the task frees its screens and files. */
+  private async releaseMerged(): Promise<void> {
+    for (const task of await this.deps.store.all()) {
+      if (!task.is("validated") || !task.awaitingMerge || !this.deps.tracker.tracks(task.key)) continue;
+      const { baseBranch } = this.deps.config.repos[task.tracker.repo];
+      try {
+        if (await this.deps.tracker.isMerged(task.tracker, task.branch, baseBranch)) await this.deps.store.save(task.merged());
+      } catch (error) {
+        this.warn(`Merge check for ${task.key} failed`, error);
+      }
+    }
+  }
+
+  /** The carrying task was closed: its members go back to the queue on their own. */
+  private async releaseMembers(carrier: TrackedTask): Promise<void> {
+    for (const member of (await this.deps.store.all()).filter((t) => t.groupedInto === carrier.key && t.is("grouped"))) {
+      await this.deps.store.save(member.ungroup().waitingFor(null));
+    }
+  }
+
+  /**
+   * While the Runner works, Studio reads the next waiting task: what it will touch (to group or hold it)
+   * and, if it is ambiguous, a question for the developer before any attempt. One task per pass.
+   */
+  private async prepareNext(): Promise<void> {
+    if (!this.deps.brain) return;
     const tasks = await this.deps.store.all();
-    if (tasks.some((t) => t.is("running"))) return;
-    // An internal fix goes first: the developer is waiting for its report.
-    // Then follow-up tasks (added suggestions): they extend what was just approved.
-    const rank = (t: TrackedTask) => (t.internalRounds > 0 ? 2 : t.tracker.followUp ? 1 : 0);
-    const queued = tasks.filter((t) => t.is("queued") && this.deps.tracker.tracks(t.key)).sort((a, b) => rank(b) - rank(a));
-    const next = queued[0];
+    if (!tasks.some((t) => t.is("running"))) return; // an idle Runner starts the task right away instead
+    const next = tasks.find((t) => t.is("queued") && t.attempt === 0 && !t.prepared && this.deps.tracker.tracks(t.key));
     if (!next) return;
+    let brief: Brief;
+    try {
+      brief = await this.deps.brain.brief({ task: next.key, app: appOf(next), title: next.title, body: next.body, attempt: 1, feedback: null });
+    } catch (error) {
+      this.failed(next, "Preparation", error);
+      await this.deps.store.save(next.preparedWith(null, null));
+      return;
+    }
+    this.prepared.set(next.key, brief);
+    let prepared = next.preparedWith(brief.footprint ?? null, brief.question ?? null);
+    if (brief.question) {
+      const asked = await this.deps.tracker.comment(next.tracker, note(`❓ Avant de lancer cette tâche, Studio demande : ${brief.question}\nRéponds en une ligne.`));
+      prepared = prepared.readUpTo(asked);
+    }
+    // The task may have moved meanwhile (closed, answered): only the preparation is added.
+    const latest = (await this.deps.store.all()).find((t) => t.key === next.key);
+    if (latest?.is("queued") && !latest.prepared) await this.deps.store.save(prepared);
+  }
+
+  /** The scheduler's pick (see `Scheduler`); small tasks on the same screen ride along one attempt. */
+  private async startNextIfIdle(): Promise<void> {
+    const tasks = (await this.deps.store.all()).filter((t) => this.deps.tracker.tracks(t.key));
+    const { start } = Scheduler.plan(tasks, this.lastRepo);
+    if (!start) return;
+    const next = start.task.carrying(start.members);
+    for (const member of start.members) {
+      const reason = `Regroupée avec « ${next.tracker.title} » : même écran, une seule tentative. Le rapport et ta réponse se font sur « ${next.tracker.title} ».`;
+      await this.deps.tracker.showWaiting(member.tracker, reason);
+      await this.deps.store.save(member.groupInto(next).waitingFor(reason));
+    }
+    if (next.waitingShown) await this.deps.tracker.showWaiting(next.tracker, null);
+    this.lastRepo = next.tracker.repo;
 
     const repo = this.deps.config.repos[next.tracker.repo];
     const jobId = randomUUID();
     const retrying = next.lastFeedback !== null;
     // Open the progress thread right away so the developer sees the task start.
-    let started = next.start(jobId);
+    let started = next.start(jobId).waitingFor(null);
     await this.deps.store.save(started);
     if (!started.progressCommentId) {
       const commentId = await this.deps.tracker.showProgress(started.tracker, { attempt: started.shownAttempt, branch: started.branch, progress: {} }, null);
@@ -407,13 +524,16 @@ export class IssueLoop {
     // The Mac prepares the repository and simulator while the brain writes the instructions, then fetches
     // them from `instructionsUrl` (without them, the raw task and the KISS plan apply).
     // An internal fix already has precise feedback: it reuses the previous instructions instead of waiting for the brain.
-    const reused = next.internalRounds > 0 ? this.lastBriefs.get(next.key) : undefined;
+    // A first attempt on its own starts with the instructions Studio wrote while it waited.
+    const reused = next.internalRounds > 0 ? this.lastBriefs.get(next.key)
+      : next.attempt === 0 && start.members.length === 0 ? this.prepared.get(next.key) : undefined;
+    this.prepared.delete(next.key);
     if (this.deps.brain) this.briefs.set(jobId, reused ?? "pending");
     try {
       await this.deps.compute.triggerJob({
         jobId,
         feature: {
-          title: `${next.tracker.title} (#${next.tracker.number})`,
+          title: `${next.title} (#${next.tracker.number})`,
           description: next.instructions,
           uiTests: KISS_PLAN.uiTests,
           devices: KISS_PLAN.devices,
@@ -439,12 +559,14 @@ export class IssueLoop {
     await this.deps.store.save(started);
     if (!this.deps.brain) return;
     if (reused) {
+      await this.remember(jobId, reused);
       await this.recordStageOf(jobId, "brief", reused.fallback ? "failed" : "passed");
       return;
     }
     await this.recordStageOf(jobId, "brief", "started");
     const brief = await this.briefFor(next);
     this.briefs.set(jobId, brief);
+    await this.remember(jobId, brief);
     this.lastBriefs.set(next.key, brief);
     this.spend(next.key, "brain", brief.trace?.costUsd);
     await this.recordStageOf(jobId, "brief", brief.fallback ? "failed" : "passed");
@@ -462,13 +584,26 @@ export class IssueLoop {
   }
 
   /** A task waiting behind a running job is told so once. */
+  /** Each waiting task is told why, once per reason: behind the running job, or held by a task touching the same thing. */
   private async noticeWaiting(): Promise<void> {
-    const tasks = await this.deps.store.all();
-    if (!tasks.some((t) => t.is("running"))) return;
-    for (const [index, waiting] of tasks.filter((t) => t.is("queued")).entries()) {
-      if (!waiting.needsQueueNotice()) continue;
-      await this.deps.tracker.comment(waiting.tracker, note(`⏳ En file d'attente (position ${index + 1}) : une autre tâche tourne sur le Mac.`));
-      await this.deps.store.save(waiting.queueNoticed());
+    const tasks = (await this.deps.store.all()).filter((t) => this.deps.tracker.tracks(t.key));
+    const { waiting } = Scheduler.plan(tasks, this.lastRepo);
+    const busy = tasks.some((t) => t.is("running"));
+    for (const [index, { task, reason }] of waiting.entries()) {
+      if (reason) {
+        if (task.waitingShown === reason) continue;
+        await this.deps.tracker.showWaiting(task.tracker, reason);
+        await this.deps.store.save(task.waitingFor(reason));
+      } else if (busy && task.needsQueueNotice()) {
+        await this.deps.tracker.comment(task.tracker, note(`⏳ En file d'attente (position ${index + 1}) : une autre tâche tourne sur le Mac.`));
+        await this.deps.store.save(task.queueNoticed());
+      }
     }
   }
+}
+
+/** Paths the diff touches ("diff --git a/x b/x"), the Runner's capture helper aside. */
+function changedFiles(diff: string): string[] {
+  const files = [...diff.matchAll(/^diff --git a\/(.+?) b\//gm)].map((m) => m[1]);
+  return [...new Set(files)].filter((f) => !f.endsWith("AITaskerCapture.swift"));
 }

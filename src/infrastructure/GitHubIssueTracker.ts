@@ -1,6 +1,7 @@
-import type { IssueTracker, ProgressView, TrackerReply, TrackerTask } from "../adapters/IssueTracker.js";
+import type { IssueTracker, MergeOutcome, ProgressView, TrackerReply, TrackerTask } from "../adapters/IssueTracker.js";
 import { JobProgress } from "../domain/JobProgress.js";
 import { TaskReport, type ReportInput } from "../domain/TaskReport.js";
+import { RUNNER_MARKER } from "../domain/Reply.js";
 import { STUDIO_KEY_PREFIX } from "./studio/StudioIssueTracker.js";
 
 export const CAPTURES_BRANCH = "aitasker-captures";
@@ -22,6 +23,19 @@ interface GitHubComment {
   body: string | null;
   user: { login: string };
 }
+
+interface PullRequest {
+  html_url: string;
+  number: number;
+}
+
+interface Comparison {
+  ahead_by: number;
+  files?: { filename: string }[];
+}
+
+/** The capture helper is refreshed on every task branch: it says nothing about overlapping work. */
+const RUNNER_FILES = new Set(["AITaskerCapture.swift"]);
 
 export class GitHubApiError extends Error {
   constructor(readonly status: number, message: string) {
@@ -140,21 +154,79 @@ export class GitHubIssueTracker implements IssueTracker {
   }
 
   async openMergeRequest(task: TrackerTask, branch: string, baseBranch: string): Promise<string> {
-    return this.openPullRequest(task.repo, branch, baseBranch, task.title,
-      `Closes #${task.number}\n\nProposé par One Week Apps Runner et validé depuis l'issue.`);
+    return this.openPullRequest(task.repo, branch, baseBranch, task.title, this.pullRequestBody(task));
+  }
+
+  async merge(task: TrackerTask, branch: string, baseBranch: string): Promise<MergeOutcome> {
+    return this.mergePullRequest(task.repo, branch, baseBranch, task.title, this.pullRequestBody(task));
+  }
+
+  async isMerged(task: TrackerTask, branch: string): Promise<boolean> {
+    return this.pullRequestMerged(task.repo, branch);
+  }
+
+  /** A merged pull request for the branch, whatever the way the developer merged it. */
+  async pullRequestMerged(repo: string, branch: string): Promise<boolean> {
+    const query = new URLSearchParams({ head: `${repo.split("/")[0]}:${branch}`, state: "closed" });
+    const { data } = await this.call<{ merged_at: string | null }[]>("GET", `/repos/${repo}/pulls?${query}`);
+    return data.some((pr) => pr.merged_at !== null);
+  }
+
+  /** On GitHub the waiting reason is a comment in the issue; nothing to say once the task starts. */
+  async showWaiting(task: TrackerTask, reason: string | null): Promise<void> {
+    if (reason) await this.comment(task, `${RUNNER_MARKER}\n⏳ ${reason}`);
+  }
+
+  private pullRequestBody(task: TrackerTask): string {
+    return `Closes #${task.number}\n\nProposé par One Week Apps Runner et validé depuis l'issue.`;
   }
 
   /** Opens the task branch's pull request, or returns the existing one. Also serves as Studio's code host. */
   async openPullRequest(repo: string, branch: string, baseBranch: string, title: string, body: string): Promise<string> {
-    const created = await this.call<{ html_url?: string }>("POST", `/repos/${repo}/pulls`, {
+    return (await this.pullRequest(repo, branch, baseBranch, title, body)).html_url;
+  }
+
+  /**
+   * Squash-merges the task's pull request and deletes its branch, so the next task starts from it. When the
+   * base changed the same files since the attempt, nothing is merged: the task is updated on top first.
+   */
+  async mergePullRequest(repo: string, branch: string, baseBranch: string, title: string, body: string): Promise<MergeOutcome> {
+    const pr = await this.pullRequest(repo, branch, baseBranch, title, body);
+    const overlap = await this.changedOnBothSides(repo, branch, baseBranch);
+    if (overlap.length) return { status: "behind", url: pr.html_url, files: overlap };
+    const merged = await this.call("PUT", `/repos/${repo}/pulls/${pr.number}/merge`, {
+      merge_method: "squash", commit_title: `${title} (#${pr.number})`,
+    }, [405, 409]);
+    if (merged.status === 200) {
+      await this.call("DELETE", `/repos/${repo}/git/refs/heads/${encodePath(branch)}`, undefined, [404, 422]);
+      return { status: "merged", url: pr.html_url };
+    }
+    const { data } = await this.call<{ mergeable_state?: string }>("GET", `/repos/${repo}/pulls/${pr.number}`);
+    if (data.mergeable_state === "dirty") return { status: "behind", url: pr.html_url, files: [] };
+    return { status: "refused", url: pr.html_url, reason: "branche protégée ou vérifications exigées" };
+  }
+
+  private async pullRequest(repo: string, branch: string, baseBranch: string, title: string, body: string): Promise<PullRequest> {
+    const created = await this.call<Partial<PullRequest>>("POST", `/repos/${repo}/pulls`, {
       title, head: branch, base: baseBranch, body,
     }, [422]);
-    if (created.status !== 422 && created.data.html_url) return created.data.html_url;
+    if (created.status !== 422 && created.data.html_url) return created.data as PullRequest;
     const owner = repo.split("/")[0];
     const query = new URLSearchParams({ head: `${owner}:${branch}`, state: "open" });
-    const { data } = await this.call<{ html_url: string }[]>("GET", `/repos/${repo}/pulls?${query}`);
+    const { data } = await this.call<PullRequest[]>("GET", `/repos/${repo}/pulls?${query}`);
     if (!data[0]) throw new GitHubApiError(422, `no pull request for ${branch}`);
-    return data[0].html_url;
+    return data[0];
+  }
+
+  /** Files the task changed that the base also changed since the task branched off (plain diffs, no AI). */
+  private async changedOnBothSides(repo: string, branch: string, baseBranch: string): Promise<string[]> {
+    const since = await this.call<Comparison>("GET", `/repos/${repo}/compare/${encodePath(branch)}...${encodePath(baseBranch)}`);
+    if (!since.data.ahead_by) return [];
+    const onBase = new Set((since.data.files ?? []).map((f) => f.filename));
+    const task = await this.call<Comparison>("GET", `/repos/${repo}/compare/${encodePath(baseBranch)}...${encodePath(branch)}`);
+    return (task.data.files ?? [])
+      .map((f) => f.filename)
+      .filter((file) => onBase.has(file) && !RUNNER_FILES.has(file.split("/").pop()!));
   }
 
   codeUrl(task: TrackerTask, branch: string, baseBranch: string): string {

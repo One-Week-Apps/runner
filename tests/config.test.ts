@@ -8,9 +8,19 @@ describe("~/.aitasker/config.json", () => {
       repos: { "One-Week-Apps/EscapeFromBlindness": { baseBranch: "chore/xcode27" } },
     });
     expect(config.repos["One-Week-Apps/EscapeFromBlindness"]).toEqual({
-      baseBranch: "chore/xcode27", cloneUrl: "https://github.com/One-Week-Apps/EscapeFromBlindness.git",
+      baseBranch: "chore/xcode27", cloneUrl: "https://github.com/One-Week-Apps/EscapeFromBlindness.git", merge: "trunk",
     });
     expect(config.label).toBe("aitasker");
+  });
+
+  it("merges after an OK by default, or leaves the pull request to the developer", () => {
+    const config = parseRunnerConfig({
+      tracker: "github", allowedAuthors: ["octocat"],
+      repos: { "a/trunk": { baseBranch: "main" }, "a/pr": { baseBranch: "main", merge: "pr" } },
+    });
+    expect(config.repos["a/trunk"].merge).toBe("trunk");
+    expect(config.repos["a/pr"].merge).toBe("pr");
+    expect(() => parseRunnerConfig({ tracker: "github", allowedAuthors: ["x"], repos: { "a/b": { baseBranch: "main", merge: "auto" } } })).toThrow();
   });
 
   it("rejects a configuration without an allowed author (security)", () => {

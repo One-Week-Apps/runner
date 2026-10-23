@@ -1,9 +1,10 @@
 import type { TrackerTask } from "../adapters/IssueTracker.js";
 import type { Reviewer, ReviewerMiss } from "../adapters/ReviewerMisses.js";
-import type { Lesson } from "../adapters/Brain.js";
+import type { Footprint, Lesson } from "../adapters/Brain.js";
 import { recordStage, type ProgressMap, type Stage, type StageStatus } from "./JobProgress.js";
 
-export type TrackedStatus = "queued" | "running" | "awaiting_reply" | "validated" | "abandoned";
+/** `grouped`: rides along another task's attempt (same screen), which carries its report and the reply. */
+export type TrackedStatus = "queued" | "running" | "awaiting_reply" | "validated" | "abandoned" | "grouped";
 
 export interface TrackedTaskProps {
   task: TrackerTask;
@@ -34,7 +35,38 @@ export interface TrackedTaskProps {
   /** Lesson learned on approval, and when: "OUBLIE" can remove it for one day. */
   learned?: Lesson | null;
   learnedAt?: string;
+  /** What the task will touch, predicted by Studio while it waits; undefined until prepared. */
+  footprint?: Footprint | null;
+  /** Studio's question before the first attempt, until the developer answers it. */
+  question?: string | null;
+  /** The developer's answers to Studio's questions, part of the task from then on. */
+  clarification?: string;
+  /** Files the attempts really changed, from the diff: more reliable than the prediction. */
+  changedFiles?: string[];
+  /** Tasks grouped into this one's attempt: their consignes go with it. */
+  members?: GroupMember[];
+  /** The task whose attempt carries this one. */
+  groupedInto?: string;
+  /** Validated, but its pull request waits for the developer's merge (pull request mode). */
+  awaitingMerge?: boolean;
+  /** The waiting reason last shown, so it is told once. */
+  waitingShown?: string | null;
 }
+
+export interface GroupMember {
+  key: string;
+  title: string;
+  body: string;
+}
+
+/** What a task holds while it is delivered and not merged: two tasks touching the same thing wait for each other. */
+export interface Touch {
+  screens: string[];
+  files: string[];
+  shared: boolean;
+}
+
+const fileName = (path: string) => path.split("/").pop()!;
 
 const FORGET_WINDOW_MS = 24 * 3600_000;
 
@@ -78,8 +110,40 @@ export class TrackedTask {
   }
   /** What Claude Code receives: the title, plus the description if any. */
   get instructions(): string {
-    const body = (this.props.task.body ?? "").trim();
-    return body ? `${this.props.task.title}\n\n${body}` : this.props.task.title;
+    const body = this.body.trim();
+    return body ? `${this.title}\n\n${body}` : this.title;
+  }
+  /** The task as Studio and the reviewers read it: grouped consignes and the developer's answers included. */
+  get title(): string {
+    const others = this.members.length;
+    return others ? `${this.props.task.title} (+ ${others} consigne${others > 1 ? "s" : ""} regroupée${others > 1 ? "s" : ""})` : this.props.task.title;
+  }
+  get body(): string {
+    return [
+      (this.props.task.body ?? "").trim(),
+      this.props.clarification ? `Précision du développeur : ${this.props.clarification}` : "",
+      ...this.members.map((m, i) => `Consigne regroupée ${i + 2} : ${m.title}${m.body.trim() ? `\n${m.body.trim()}` : ""}`),
+    ].filter(Boolean).join("\n\n");
+  }
+  get members(): GroupMember[] { return this.props.members ?? []; }
+  get groupedInto(): string | null { return this.props.groupedInto ?? null; }
+  get footprint(): Footprint | null { return this.props.footprint ?? null; }
+  get prepared(): boolean { return this.props.footprint !== undefined; }
+  get pendingQuestion(): string | null { return this.props.question ?? null; }
+  get awaitingMerge(): boolean { return !!this.props.awaitingMerge; }
+  get waitingShown(): string | null { return this.props.waitingShown ?? null; }
+  /** A KO from the developer: they wait for this attempt with the context in mind. */
+  get isDeveloperRetry(): boolean { return this.props.attempts > 0 && this.internalRounds === 0; }
+  /** What it touches, known from the diff once it ran, predicted before; null when nothing is known. */
+  get touch(): Touch | null {
+    const footprint = this.props.footprint;
+    const changed = this.props.changedFiles ?? [];
+    if (!footprint && changed.length === 0) return null;
+    return {
+      screens: footprint?.screens ?? [],
+      files: [...new Set([...changed, ...(footprint?.files ?? [])].map(fileName))],
+      shared: footprint?.shared ?? false,
+    };
   }
   get replyCursor(): string | null { return this.props.replyCursor; }
   get lastFeedback(): string | null { return this.props.lastFeedback; }
@@ -162,11 +226,57 @@ export class TrackedTask {
 
   /** Issue closed (or label removed): the task leaves the queue. A job already started runs to the end. */
   abandon(): TrackedTask {
-    return this.is("queued") || this.is("awaiting_reply") ? this.with({ status: "abandoned" }) : this;
+    return this.is("queued") || this.is("awaiting_reply") || this.is("grouped") ? this.with({ status: "abandoned" }) : this;
   }
 
-  validate(learned: Lesson | null = null, at?: string): TrackedTask {
-    return this.with({ status: "validated", lesson: null, learned, learnedAt: learned ? at : undefined, devSession: null });
+  /** `awaitingMerge`: pull request mode, the task keeps its screens and files until the developer merges. */
+  validate(learned: Lesson | null = null, at?: string, awaitingMerge = false): TrackedTask {
+    return this.with({ status: "validated", lesson: null, learned, learnedAt: learned ? at : undefined, devSession: null, awaitingMerge });
+  }
+
+  merged(): TrackedTask {
+    return this.with({ awaitingMerge: false });
+  }
+
+  /** Studio read the task while it waited: what it touches, and its question if it is ambiguous. */
+  preparedWith(footprint: Footprint | null, question: string | null): TrackedTask {
+    return this.with({ footprint, question });
+  }
+
+  /** The developer answered Studio's question: it is part of the task, and Studio reads it again. */
+  answered(text: string): TrackedTask {
+    const clarification = this.props.clarification ? `${this.props.clarification}\n${text}` : text;
+    return this.with({ clarification, question: null, footprint: undefined });
+  }
+
+  /** The files the attempts really changed. */
+  changed(files: string[]): TrackedTask {
+    return files.length ? this.with({ changedFiles: [...new Set([...(this.props.changedFiles ?? []), ...files])] }) : this;
+  }
+
+  /** This task's attempt also carries the members' consignes. */
+  carrying(members: TrackedTask[]): TrackedTask {
+    return members.length
+      ? this.with({ members: [...this.members, ...members.map((m) => ({ key: m.key, title: m.tracker.title, body: m.tracker.body }))] })
+      : this;
+  }
+
+  groupInto(leader: TrackedTask): TrackedTask {
+    return this.with({ status: "grouped", groupedInto: leader.key });
+  }
+
+  /** Its group was dropped (the carrying task closed): back in the queue on its own. */
+  ungroup(): TrackedTask {
+    return this.with({ status: "queued", groupedInto: undefined });
+  }
+
+  /** The developer reordered the queue: the task keeps its place from the tracker. */
+  reranked(rank: number | undefined): TrackedTask {
+    return rank === this.props.task.rank ? this : this.with({ task: { ...this.props.task, rank } });
+  }
+
+  waitingFor(reason: string | null): TrackedTask {
+    return this.with({ waitingShown: reason });
   }
 
   readUpTo(replyId: string): TrackedTask {

@@ -9,6 +9,8 @@ export interface TrackerTask {
   url: string;
   /** Follow-up task, born from added suggestions: jumps the queue and offers no new ones. */
   followUp?: boolean;
+  /** Position the developer gave it in the Runner's queue (lower first); creation order otherwise. */
+  rank?: number;
 }
 
 export interface TrackerReply {
@@ -29,6 +31,16 @@ export interface ProgressView {
   note?: string;
 }
 
+/**
+ * What a merge after an OK gave. `behind`: the base changed the same files since the attempt (or conflicts),
+ * so the task is updated on top of it first. `refused`: this Mac may not merge (protected branch, no code
+ * host), the pull request waits for the developer.
+ */
+export type MergeOutcome =
+  | { status: "merged"; url: string }
+  | { status: "behind"; url: string; files: string[] }
+  | { status: "refused"; url: string; reason: string };
+
 /** The task tracker port: the only piece to implement for another tracker such as GitLab. */
 export interface IssueTracker {
   /** Does this task come from this tracker? A task from another source is never touched. */
@@ -44,6 +56,12 @@ export interface IssueTracker {
   publishImage(task: TrackerTask, path: string, bytes: Uint8Array): Promise<string>;
   repliesAfter(task: TrackerTask, cursor: string | null): Promise<TrackerReply[]>;
   openMergeRequest(task: TrackerTask, branch: string, baseBranch: string): Promise<string>;
+  /** After an OK (trunk-based): merges the task branch into the base, unless the base changed the same code meanwhile. */
+  merge(task: TrackerTask, branch: string, baseBranch: string): Promise<MergeOutcome>;
+  /** Pull request mode: has the developer merged the task's branch yet? Until then it holds its screens and files. */
+  isMerged(task: TrackerTask, branch: string, baseBranch: string): Promise<boolean>;
+  /** Why a queued task is not running yet ("waits for A: also touches Theme.swift"); null once it starts. */
+  showWaiting(task: TrackerTask, reason: string | null): Promise<void>;
   addLabel(task: TrackerTask, label: string): Promise<void>;
   /** Where to read an attempt's code: the diff between the base branch and the task branch. */
   codeUrl(task: TrackerTask, branch: string, baseBranch: string): string;
