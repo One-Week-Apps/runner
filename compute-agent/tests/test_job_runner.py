@@ -656,7 +656,8 @@ async def test_a_task_test_that_never_ran_fails_the_tests(mock_post_callback, tm
     assert body.outcome == "failure"
     assert body.test_status == "failed"
     assert body.failed_tests == [
-        "NiveauxTuilesAlignementUITests n'a pas tourné : son fichier n'est dans aucune cible de tests du projet, ajoute-le à la cible des tests UI",
+        "NiveauxTuilesAlignementUITests n'a pas tourné : son fichier n'est dans aucune cible de tests du projet. "
+        "Ajoute-le à la cible des tests UI, ou supprime le fichier s'il ne sert plus",
     ]
 
 

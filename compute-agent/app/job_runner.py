@@ -283,8 +283,8 @@ async def run_job(
                                                     result_bundle=result_bundle, timeout=timeout_seconds)
             if unran:
                 test_status = "failed"
-                failures = [f"{name} n'a pas tourné : son fichier n'est dans aucune cible de tests du projet, "
-                            "ajoute-le à la cible des tests UI" for name in unran]
+                failures = [f"{name} n'a pas tourné : son fichier n'est dans aucune cible de tests du projet. "
+                            "Ajoute-le à la cible des tests UI, ou supprime le fichier s'il ne sert plus" for name in unran]
                 stage = "test"
                 raise TestStageError(f"Task tests never ran: {', '.join(unran)}")
 
