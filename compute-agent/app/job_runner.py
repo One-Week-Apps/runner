@@ -19,7 +19,7 @@ from app.pipeline.preflight import (
     install_dependencies,
     pick_simulators,
 )
-from app.pipeline.screenshots import export_screenshots, read_failures
+from app.pipeline.screenshots import export_screenshots, read_failures, read_ran_suites
 from app.pipeline.test_selection import task_ui_tests, ui_tests_to_skip
 from app.pipeline.workspace import catch_up_with_base, commit_attempt, prepare_workspace, push_branch, related_branches, task_diff
 from app.pipeline.xcode_stages import (
@@ -32,6 +32,18 @@ from app.pipeline.xcode_stages import (
 logger = logging.getLogger(__name__)
 
 Status = Literal["pending", "passed", "failed"]
+
+
+async def _task_tests_that_never_ran(runner: CommandRunner, *, repo_path: str, base_branch: str,
+                                     result_bundle: str, timeout: float) -> "list[str]":
+    """The UI test classes the task wrote that xcodebuild did not run: a test that never ran proves nothing."""
+    written = [name.split("/")[-1] for name in await task_ui_tests(runner, repo_path=repo_path, base_branch=base_branch, timeout=timeout)]
+    if not written:
+        return []
+    ran = await read_ran_suites(runner, result_bundle=result_bundle, timeout=timeout)
+    if ran is None:
+        return []
+    return [name for name in written if name not in ran]
 
 
 async def post_callback(callback_url: str, body: JobCallbackBody) -> None:
@@ -265,6 +277,16 @@ async def run_job(
                         runner, repo_path=repo_path, base_branch=feature.base_branch or "main", timeout=timeout_seconds)}
                     nodes = [n.model_copy(update={"for_task": (n.action or "").split("/")[0] in touched}) for n in nodes]
                 await report("captures", "passed")
+
+        if managed and result_bundle:
+            unran = await _task_tests_that_never_ran(runner, repo_path=repo_path, base_branch=feature.base_branch or "main",
+                                                    result_bundle=result_bundle, timeout=timeout_seconds)
+            if unran:
+                test_status = "failed"
+                failures = [f"{name} n'a pas tourné : son fichier n'est dans aucune cible de tests du projet, "
+                            "ajoute-le à la cible des tests UI" for name in unran]
+                stage = "test"
+                raise TestStageError(f"Task tests never ran: {', '.join(unran)}")
 
         outcome = "success"
 

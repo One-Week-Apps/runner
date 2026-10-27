@@ -2,7 +2,7 @@ import json
 import logging
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import NamedTuple
+from typing import NamedTuple, Optional
 
 from app.models import NodeCapture
 from app.pipeline.command_runner import CommandRunner
@@ -134,3 +134,32 @@ async def read_failures(runner: CommandRunner, *, result_bundle: str, timeout: f
         walk(node, "", "")
     return found
 
+
+
+async def read_ran_suites(runner: CommandRunner, *, result_bundle: str, timeout: float) -> "Optional[set]":
+    """Test classes xcodebuild actually ran. A file in no target never shows up here, and xcodebuild says nothing.
+
+    None when the results are unreadable: nothing can be concluded, so nothing is blamed.
+    """
+    result = await runner.run(
+        ["xcrun", "xcresulttool", "get", "test-results", "tests", "--path", result_bundle],
+        timeout=timeout,
+    )
+    if result.exit_code != 0 or result.timed_out:
+        return None
+    try:
+        tree = json.loads(result.stdout)
+    except json.JSONDecodeError:
+        return None
+
+    ran = set()
+
+    def walk(node: dict) -> None:
+        if node.get("nodeType") == "Test Suite" and any(c.get("nodeType") == "Test Case" for c in node.get("children", [])):
+            ran.add(node.get("name", ""))
+        for child in node.get("children", []):
+            walk(child)
+
+    for node in tree.get("testNodes", []):
+        walk(node)
+    return ran

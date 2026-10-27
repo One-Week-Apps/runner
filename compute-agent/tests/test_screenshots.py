@@ -3,7 +3,7 @@ from pathlib import Path
 from typing import Optional
 
 from app.pipeline.command_runner import CommandResult
-from app.pipeline.screenshots import export_screenshots, read_failures
+from app.pipeline.screenshots import export_screenshots, read_failures, read_ran_suites
 
 MANIFEST = [
     {
@@ -124,3 +124,13 @@ async def test_failed_tests_are_named_with_their_first_failure_message():
 
 async def test_unreadable_results_give_no_names_but_never_break_the_job():
     assert await read_failures(ResultsRunner(exit_code=1), result_bundle="/r.xcresult", timeout=10) == []
+
+
+async def test_the_suites_that_ran_are_listed_by_class():
+    ran = await read_ran_suites(ResultsRunner(), result_bundle="/r.xcresult", timeout=10)
+
+    assert ran == {"LoadLevelViewControllerTests", "LevelSelectionUITests"}
+
+
+async def test_unreadable_results_say_nothing_about_what_ran():
+    assert await read_ran_suites(ResultsRunner(exit_code=1), result_bundle="/r.xcresult", timeout=10) is None

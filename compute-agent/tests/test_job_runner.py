@@ -627,3 +627,50 @@ async def test_the_callback_flags_related_unmerged_tasks(mock_post_callback, tmp
 
     body = mock_post_callback.await_args.args[1].model_dump(by_alias=True)
     assert body["relatedBranches"] == [{"branch": "aitasker/issue-13", "files": ["Home.swift"]}]
+
+
+def task_wrote(monkeypatch, tests, ran):
+    """The UI tests the task wrote, and the suites xcodebuild actually ran (None: unreadable results)."""
+    async def fake_export(runner, **kwargs):
+        return []
+
+    async def touched(runner, **kwargs):
+        return tests
+
+    async def fake_ran(runner, *, result_bundle, timeout):
+        return ran
+
+    monkeypatch.setattr(job_runner_module, "export_screenshots", fake_export)
+    monkeypatch.setattr(job_runner_module, "task_ui_tests", touched)
+    monkeypatch.setattr(job_runner_module, "read_ran_suites", fake_ran)
+
+
+async def test_a_task_test_that_never_ran_fails_the_tests(mock_post_callback, tmp_path, monkeypatch):
+    # EscapeFromBlindness, 2026-10-26: the file was on disk but in no target, xcodebuild said nothing.
+    task_wrote(monkeypatch, ["AppUITests/NiveauxTuilesAlignementUITests", "AppUITests/ActivationUITests"],
+               ran={"AppUITests", "ActivationUITests"})
+
+    await run_job(MANAGED_JOB, runner=FakeCommandRunner(), timeout_seconds=10, repos_dir=tmp_path / "repos", screenshots_dir=tmp_path / "shots", base_url="http://mac:8000")
+
+    body = mock_post_callback.await_args.args[1]
+    assert body.outcome == "failure"
+    assert body.test_status == "failed"
+    assert body.failed_tests == [
+        "NiveauxTuilesAlignementUITests n'a pas tourné : son fichier n'est dans aucune cible de tests du projet, ajoute-le à la cible des tests UI",
+    ]
+
+
+async def test_task_tests_that_ran_keep_the_tests_green(mock_post_callback, tmp_path, monkeypatch):
+    task_wrote(monkeypatch, ["AppUITests/ActivationUITests"], ran={"ActivationUITests"})
+
+    await run_job(MANAGED_JOB, runner=FakeCommandRunner(), timeout_seconds=10, repos_dir=tmp_path / "repos", screenshots_dir=tmp_path / "shots", base_url="http://mac:8000")
+
+    assert mock_post_callback.await_args.args[1].test_status == "passed"
+
+
+async def test_unreadable_results_never_fail_the_task(mock_post_callback, tmp_path, monkeypatch):
+    task_wrote(monkeypatch, ["AppUITests/ActivationUITests"], ran=None)
+
+    await run_job(MANAGED_JOB, runner=FakeCommandRunner(), timeout_seconds=10, repos_dir=tmp_path / "repos", screenshots_dir=tmp_path / "shots", base_url="http://mac:8000")
+
+    assert mock_post_callback.await_args.args[1].test_status == "passed"
