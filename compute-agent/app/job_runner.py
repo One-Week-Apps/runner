@@ -21,7 +21,7 @@ from app.pipeline.preflight import (
 )
 from app.pipeline.screenshots import export_screenshots, read_failures, read_ran_suites
 from app.pipeline.test_selection import task_ui_tests, ui_tests_to_skip
-from app.pipeline.workspace import catch_up_with_base, commit_attempt, prepare_workspace, push_branch, related_branches, task_diff
+from app.pipeline.workspace import catch_up_with_base, commit_attempt, human_commits, prepare_workspace, push_branch, related_branches, task_diff
 from app.pipeline.xcode_stages import (
     BuildStageError,
     TestStageError,
@@ -123,6 +123,7 @@ async def run_job(
     dev_cost: Optional[float] = None
     dev_session: Optional[str] = None
     related: list = []
+    commits: list = []
     dev_error: Optional[str] = None
     feature = job.feature
     repo_path = feature.repo
@@ -319,6 +320,10 @@ async def run_job(
                                              branch=feature.branch, timeout=timeout_seconds)
         except Exception:
             logger.warning("Could not list related branches for job %s", job.job_id, exc_info=True)
+        try:
+            commits = await human_commits(runner, repo_path=repo_path, base_branch=feature.base_branch or "main", timeout=timeout_seconds)
+        except Exception:
+            logger.warning("Could not read the commit history for job %s", job.job_id, exc_info=True)
 
     body = JobCallbackBody(
         outcome=outcome,
@@ -331,6 +336,7 @@ async def run_job(
         dev_cost_usd=dev_cost,
         dev_session_id=dev_session,
         related_branches=related,
+        recent_commits=commits,
         dev_error=dev_error,
     )
 

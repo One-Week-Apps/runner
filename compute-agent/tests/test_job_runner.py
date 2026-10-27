@@ -52,6 +52,7 @@ class FakeCommandRunner:
             ("git", "merge"): CommandResult(0, "", ""),
             ("git", "branch"): CommandResult(0, "", ""),
             ("git", "ls-files"): CommandResult(0, "", ""),
+            ("git", "log"): CommandResult(0, "", ""),
             ("defaults", "read"): CommandResult(1, "", ""),
             ("claude", "-p"): CommandResult(0, json.dumps({"is_error": False}), ""),
             ("xcodebuild", "build-for-testing"): CommandResult(0, "BUILD SUCCEEDED", ""),
@@ -675,3 +676,14 @@ async def test_unreadable_results_never_fail_the_task(mock_post_callback, tmp_pa
     await run_job(MANAGED_JOB, runner=FakeCommandRunner(), timeout_seconds=10, repos_dir=tmp_path / "repos", screenshots_dir=tmp_path / "shots", base_url="http://mac:8000")
 
     assert mock_post_callback.await_args.args[1].test_status == "passed"
+
+
+async def test_the_callback_carries_the_projects_own_commit_subjects(mock_post_callback, tmp_path):
+    # Studio writes the merge commit like the project's humans do, not like the agents before it.
+    log = "refactor(app coordinator): remove some unused code\x1f\x1eaitasker: tentative 1 — Titre (#1)\x1f\x1e"
+    runner = FakeCommandRunner(overrides={("git", "log"): CommandResult(0, log, "")})
+
+    await run_job(MANAGED_JOB, runner=runner, timeout_seconds=10, repos_dir=tmp_path)
+
+    body = mock_post_callback.await_args.args[1]
+    assert body.model_dump(by_alias=True)["recentCommits"] == ["refactor(app coordinator): remove some unused code"]

@@ -104,6 +104,23 @@ async def _changed_files(runner: CommandRunner, *, repo_path: str, range_: str, 
     return {line.strip() for line in result.stdout.splitlines() if line.strip() and Path(line.strip()).name not in RUNNER_FILES}
 
 
+async def human_commits(runner: CommandRunner, *, repo_path: str, base_branch: str, timeout: float, limit: int = 60) -> "list[str]":
+    """Commit subjects of the base branch written by people: Studio writes the merge commit the same way.
+
+    What agents wrote (the Runner's attempts and squashes, which mention "aitasker") and merge commits
+    are not the project's convention. Unreadable history: no subjects, Studio falls back to Conventional Commits.
+    """
+    result = await runner.run(["git", "log", "--format=%s%x1f%b%x1e", "-400", f"origin/{base_branch}"], cwd=repo_path, timeout=timeout)
+    if result.exit_code != 0 or result.timed_out:
+        return []
+    subjects = []
+    for record in result.stdout.split("\x1e"):
+        subject, _, body = record.strip().partition("\x1f")
+        if subject and "aitasker" not in (subject + body).lower() and not subject.startswith("Merge "):
+            subjects.append(subject)
+    return subjects[:limit]
+
+
 async def related_branches(runner: CommandRunner, *, repo_path: str, base_branch: str, branch: str, timeout: float) -> "list[dict]":
     """Other unmerged tasks touching the same files, so the developer sees a coming conflict before
     approving. Plain git, no AI cost."""

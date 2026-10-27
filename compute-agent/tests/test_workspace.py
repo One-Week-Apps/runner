@@ -125,3 +125,28 @@ async def test_other_unmerged_tasks_touching_the_same_files():
 
     assert ["git", "branch", "-r", "--no-merged", "origin/master", "--list", "origin/aitasker/*"] in runner.commands()
     assert related == [{"branch": "aitasker/issue-13", "files": ["Home.swift"]}]
+
+
+async def test_human_commits_skip_what_the_runner_and_merges_wrote():
+    from app.pipeline.workspace import human_commits
+    log = "\x1e".join([
+        "Sur Niveaux aligne les tuiles (#19)\x1f* aitasker: tentative 1 — Sur Niveaux aligne les tuiles\n",
+        "Merge pull request #18 from One-Week-Apps/aitasker/tache-1\x1f",
+        "aitasker: tentative 2 — Titre en gras (#1)\x1f",
+        "Merge branch 'master' into feature\x1f",
+        "refactor(app coordinator): improve app coordinator readability\x1f",
+        "config(version): bump version number to 2.0\x1fadded level selection",
+    ]) + "\x1e"
+    runner = ScriptedRunner({("git", "log"): CommandResult(0, log, "")})
+
+    commits = await human_commits(runner, repo_path="/r", base_branch="master", timeout=10)
+
+    assert commits == ["refactor(app coordinator): improve app coordinator readability", "config(version): bump version number to 2.0"]
+    assert runner.commands()[0][:2] == ["git", "log"] and "origin/master" in runner.commands()[0]
+
+
+async def test_unreadable_history_gives_no_commits():
+    from app.pipeline.workspace import human_commits
+    runner = ScriptedRunner({("git", "log"): CommandResult(128, "", "fatal")})
+
+    assert await human_commits(runner, repo_path="/r", base_branch="master", timeout=10) == []

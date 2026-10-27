@@ -73,6 +73,8 @@ class JobCallbackBody(CamelModel):
     dev_session_id: Optional[str] = None
     # Other unmerged tasks touching the same files: a conflict is coming.
     related_branches: list[RelatedBranch] = []
+    # Commit subjects of the base written by people (not by agents): the convention Studio follows for the merge.
+    recent_commits: list[str] = []
     # Claude Code did not work at all (usage limit, login…): its own words, so the Runner tells the developer
     # instead of "fixing" a task nobody touched.
     dev_error: Optional[str] = None
