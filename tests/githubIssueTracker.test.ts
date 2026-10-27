@@ -172,6 +172,21 @@ describe("GitHubIssueTracker", () => {
     expect(gh.calls.at(-1)!.method).toBe("DELETE");
   });
 
+  it("squash-merges with the commit Studio wrote, marked as the Runner's", async () => {
+    const gh = fakeGitHub({
+      ...PR, ...compare(["Other/Settings.swift"], ["App/Theme.swift"]),
+      "PUT /repos/One-Week-Apps/EFB/pulls/9/merge": () => ({ status: 200, body: { merged: true } }),
+      "DELETE /repos/One-Week-Apps/EFB/git/refs/heads/aitasker/issue-7": () => ({ status: 204 }),
+    });
+
+    expect(await new GitHubIssueTracker("tok", gh.fetchImpl).merge(TASK, "aitasker/issue-7", "main", "feat(home): enlarge the play button"))
+      .toEqual({ status: "merged", url: "https://github.com/One-Week-Apps/EFB/pull/9" });
+    const merge = gh.calls.find((c) => c.method === "PUT")!;
+    expect(merge.body).toMatchObject({ merge_method: "squash", commit_title: "feat(home): enlarge the play button (#9)" });
+    expect(merge.body).toMatchObject({ commit_message: expect.stringContaining("aitasker/issue-7") });
+    expect(gh.calls.at(-1)!.method).toBe("DELETE");
+  });
+
   it("does not merge when the base changed the same files since the task ran", async () => {
     const gh = fakeGitHub({ ...PR, ...compare(["App/Theme.swift", "README.md"], ["App/Theme.swift", "App/AITaskerCapture.swift"]) });
 

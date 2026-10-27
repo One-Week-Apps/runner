@@ -157,8 +157,8 @@ export class GitHubIssueTracker implements IssueTracker {
     return this.openPullRequest(task.repo, branch, baseBranch, task.title, this.pullRequestBody(task));
   }
 
-  async merge(task: TrackerTask, branch: string, baseBranch: string): Promise<MergeOutcome> {
-    return this.mergePullRequest(task.repo, branch, baseBranch, task.title, this.pullRequestBody(task));
+  async merge(task: TrackerTask, branch: string, baseBranch: string, commit?: string): Promise<MergeOutcome> {
+    return this.mergePullRequest(task.repo, branch, baseBranch, task.title, this.pullRequestBody(task), commit);
   }
 
   async isMerged(task: TrackerTask, branch: string): Promise<boolean> {
@@ -189,13 +189,15 @@ export class GitHubIssueTracker implements IssueTracker {
   /**
    * Squash-merges the task's pull request and deletes its branch, so the next task starts from it. When the
    * base changed the same files since the attempt, nothing is merged: the task is updated on top first.
+   * The commit names the task branch: reading the history later, Studio knows an agent wrote it.
    */
-  async mergePullRequest(repo: string, branch: string, baseBranch: string, title: string, body: string): Promise<MergeOutcome> {
+  async mergePullRequest(repo: string, branch: string, baseBranch: string, title: string, body: string, commit?: string): Promise<MergeOutcome> {
     const pr = await this.pullRequest(repo, branch, baseBranch, title, body);
     const overlap = await this.changedOnBothSides(repo, branch, baseBranch);
     if (overlap.length) return { status: "behind", url: pr.html_url, files: overlap };
     const merged = await this.call("PUT", `/repos/${repo}/pulls/${pr.number}/merge`, {
-      merge_method: "squash", commit_title: `${title} (#${pr.number})`,
+      merge_method: "squash", commit_title: `${commit ?? title} (#${pr.number})`,
+      commit_message: `Merged by One Week Apps Runner from ${branch}.`,
     }, [405, 409]);
     if (merged.status === 200) {
       await this.call("DELETE", `/repos/${repo}/git/refs/heads/${encodePath(branch)}`, undefined, [404, 422]);

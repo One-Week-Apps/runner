@@ -8,7 +8,7 @@ import { endpoints, type StudioSession } from "./StudioSession.js";
 /** Where the code lives: GitHub merges (or opens the pull request) after an OK and shows the diff. Without it, the work stays on the pushed branch. */
 export interface CodeHost {
   openPullRequest(repo: string, branch: string, baseBranch: string, title: string, body: string): Promise<string>;
-  mergePullRequest(repo: string, branch: string, baseBranch: string, title: string, body: string): Promise<MergeOutcome>;
+  mergePullRequest(repo: string, branch: string, baseBranch: string, title: string, body: string, commit?: string): Promise<MergeOutcome>;
   pullRequestMerged(repo: string, branch: string): Promise<boolean>;
   codeUrl(task: TrackerTask, branch: string, baseBranch: string): string;
 }
@@ -169,9 +169,9 @@ export class StudioIssueTracker implements IssueTracker {
     return this.codeHost.openPullRequest(task.repo, branch, baseBranch, task.title, this.pullRequestBody(task));
   }
 
-  async merge(task: TrackerTask, branch: string, baseBranch: string): Promise<MergeOutcome> {
+  async merge(task: TrackerTask, branch: string, baseBranch: string, commit?: string): Promise<MergeOutcome> {
     if (!this.codeHost) return { status: "refused", url: `la branche ${branch}`, reason: "pas d'accès GitHub sur ce Mac" };
-    return this.codeHost.mergePullRequest(task.repo, branch, baseBranch, task.title, this.pullRequestBody(task));
+    return this.codeHost.mergePullRequest(task.repo, branch, baseBranch, task.title, this.pullRequestBody(task), commit);
   }
 
   /** Without a code host the Runner cannot see the merge: the task does not hold anything. */

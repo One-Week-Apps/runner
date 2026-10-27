@@ -37,6 +37,7 @@ const resultSchema = z.object({
   devSessionId: z.string().nullable().optional(),
   devError: z.string().max(2000).nullable().optional(),
   relatedBranches: z.array(z.object({ branch: z.string(), files: z.array(z.string()) })).optional(),
+  recentCommits: z.array(z.string().max(300)).max(100).optional(),
 });
 
 /** Callbacks from the compute agent for a task's job. */

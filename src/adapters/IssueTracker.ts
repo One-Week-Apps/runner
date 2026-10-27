@@ -57,7 +57,7 @@ export interface IssueTracker {
   repliesAfter(task: TrackerTask, cursor: string | null): Promise<TrackerReply[]>;
   openMergeRequest(task: TrackerTask, branch: string, baseBranch: string): Promise<string>;
   /** After an OK (trunk-based): merges the task branch into the base, unless the base changed the same code meanwhile. */
-  merge(task: TrackerTask, branch: string, baseBranch: string): Promise<MergeOutcome>;
+  merge(task: TrackerTask, branch: string, baseBranch: string, commit?: string): Promise<MergeOutcome>;
   /** Pull request mode: has the developer merged the task's branch yet? Until then it holds its screens and files. */
   isMerged(task: TrackerTask, branch: string, baseBranch: string): Promise<boolean>;
   /** Why a queued task is not running yet ("waits for A: also touches Theme.swift"); null once it starts. */

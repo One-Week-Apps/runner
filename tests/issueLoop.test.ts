@@ -67,11 +67,11 @@ class FakeTracker implements IssueTracker {
   waitingFor(number: number): string | null {
     return this.waiting.filter((w) => w.key === `One-Week-Apps/EFB#${number}`).at(-1)?.reason ?? null;
   }
-  merges: { key: string; branch: string; base: string }[] = [];
+  merges: { key: string; branch: string; base: string; commit?: string }[] = [];
   /** What the next merges give, in order; afterwards they succeed. */
   mergeOutcomes: MergeOutcome[] = [];
-  async merge(task: TrackerTask, branch: string, base: string): Promise<MergeOutcome> {
-    this.merges.push({ key: task.key, branch, base });
+  async merge(task: TrackerTask, branch: string, base: string, commit?: string): Promise<MergeOutcome> {
+    this.merges.push({ key: task.key, branch, base, ...(commit ? { commit } : {}) });
     return this.mergeOutcomes.shift() ?? { status: "merged", url: `https://pr/${task.number}` };
   }
   async addLabel(task: TrackerTask, label: string): Promise<void> {
@@ -356,6 +356,22 @@ describe("IssueLoop: an issue becomes a Runner task", () => {
     expect(tracker.commentsFor(7).at(-1)).toContain("fusionné dans chore/xcode27");
     expect(tracker.commentsFor(7).at(-1)).toContain("https://pr/7");
     expect(compute.jobs).toHaveLength(1);
+  });
+
+  it("OK: the merge commit is the one Studio wrote, like the project's own commits", async () => {
+    const brain = new FakeBrain();
+    brain.codeReview_ = { verdict: "ok", remarks: [], commit: "feature(level selection): align the level tiles" };
+    const { tracker, compute, loop } = setup(brain);
+    tracker.open(7);
+    await loop.tick();
+    await loop.onJobResult({ ...result(compute.jobs[0].jobId), diff: "diff --git a/A.swift b/A.swift", recentCommits: ["refactor(app coordinator): remove some unused code"] });
+
+    tracker.reply(7, "OK");
+    await loop.tick();
+    await loop.tick();
+
+    expect(brain.codeReviews[0].recentCommits).toEqual(["refactor(app coordinator): remove some unused code"]);
+    expect(tracker.merges).toEqual([{ key: "One-Week-Apps/EFB#7", branch: "aitasker/issue-7", base: "chore/xcode27", commit: "feature(level selection): align the level tiles" }]);
   });
 
   it("OK in pull request mode: opens the pull request and leaves the merge to the developer", async () => {

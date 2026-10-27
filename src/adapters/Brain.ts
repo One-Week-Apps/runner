@@ -130,6 +130,8 @@ export interface CodeReviewRequest {
   feedback?: string;
   /** "Done" criteria: the code review checks those visible in the code. */
   criteria?: string[];
+  /** Commit subjects of the base written by people, newest first: the convention of the merge commit. */
+  recentCommits?: string[];
 }
 
 /** Review of the diff by a reviewer who sees neither the screenshots nor the coding agent's reasoning. */
@@ -137,6 +139,8 @@ export interface CodeReview {
   verdict: "ok" | "to_fix";
   remarks: Remark[];
   criteria?: CriterionCheck[];
+  /** Subject of the merge commit, written like the project's commits (Conventional Commits otherwise). */
+  commit?: string;
   trace?: BrainTrace;
 }
 

@@ -51,6 +51,8 @@ export interface TrackedTaskProps {
   awaitingMerge?: boolean;
   /** The waiting reason last shown, so it is told once. */
   waitingShown?: string | null;
+  /** Subject of the merge commit, written by the code review for the last delivery. */
+  commit?: string;
 }
 
 export interface GroupMember {
@@ -75,6 +77,7 @@ export interface Delivery {
   approvedBy: Reviewer[];
   knowledge?: string;
   lesson?: Lesson | null;
+  commit?: string;
 }
 
 /** A task's lifecycle: queued → running → awaiting reply → (KO: queued) / validated. */
@@ -131,6 +134,8 @@ export class TrackedTask {
   get prepared(): boolean { return this.props.footprint !== undefined; }
   get pendingQuestion(): string | null { return this.props.question ?? null; }
   get awaitingMerge(): boolean { return !!this.props.awaitingMerge; }
+  /** What the merge commit says; without it, the task's title. */
+  get commitSubject(): string | undefined { return this.props.commit; }
   get waitingShown(): string | null { return this.props.waitingShown ?? null; }
   /** A KO from the developer: they wait for this attempt with the context in mind. */
   get isDeveloperRetry(): boolean { return this.props.attempts > 0 && this.internalRounds === 0; }
@@ -180,7 +185,7 @@ export class TrackedTask {
   finish(delivery: Delivery = { approvedBy: [] }): TrackedTask {
     return this.with({
       status: "awaiting_reply", currentJobId: null, progressCommentId: null, internalRounds: 0, fixedInternally: [],
-      approvedBy: delivery.approvedBy, approvedWith: delivery.knowledge, lesson: delivery.lesson ?? null,
+      approvedBy: delivery.approvedBy, approvedWith: delivery.knowledge, lesson: delivery.lesson ?? null, commit: delivery.commit,
     });
   }
 

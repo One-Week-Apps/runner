@@ -55,6 +55,8 @@ export interface IssueJobResult {
   devSessionId?: string | null;
   /** Other unmerged tasks touching the same files. */
   relatedBranches?: { branch: string; files: string[] }[];
+  /** Commit subjects of the base written by people: the convention of the merge commit. */
+  recentCommits?: string[];
   /** Claude Code did not work at all (usage limit, login…), in its own words. */
   devError?: string | null;
 }
@@ -200,7 +202,7 @@ export class IssueLoop {
     const toReview = this.lastBriefs.get(current.key)?.reviews?.ux === false ? [] : (ofTask.length ? ofTask : seen).map(({ forTask: _, ...capture }) => capture);
     const reviewing = !!this.deps.brain && (toReview.length > 0 || !!diff);
     if (reviewing) current = await this.recordStage(current, "review", "started");
-    const [ux, code] = await Promise.all([this.reviewOf(current, toReview), this.codeReviewOf(current, diff)]);
+    const [ux, code] = await Promise.all([this.reviewOf(current, toReview), this.codeReviewOf(current, diff, result.recentCommits)]);
     if (reviewing) current = await this.recordStage(current, "review", (toReview.length === 0 || ux) && (!diff || code) ? "passed" : "failed");
     this.spend(current.key, "brain", ux?.trace?.costUsd, code?.trace?.costUsd);
     this.spend(current.key, "dev", result.devCostUsd ?? undefined);
@@ -256,7 +258,7 @@ export class IssueLoop {
     const reviews = [["ux", ux], ["code", code]] as const;
     const ran = reviews.filter(([, review]) => review);
     const approvedBy: Reviewer[] = ran.every(([, review]) => review!.verdict === "ok") ? ran.map(([reviewer]) => reviewer) : [];
-    await this.deps.store.save(current.finish({ approvedBy, knowledge: ux?.trace?.knowledge ?? code?.trace?.knowledge, lesson }));
+    await this.deps.store.save(current.finish({ approvedBy, knowledge: ux?.trace?.knowledge ?? code?.trace?.knowledge, lesson, commit: code?.commit }));
   }
 
   private async reviewOf(task: TrackedTask, captures: BrainCapture[]): Promise<UxReview | null> {
@@ -273,11 +275,11 @@ export class IssueLoop {
     }
   }
 
-  private async codeReviewOf(task: TrackedTask, diff: string | null): Promise<CodeReview | null> {
+  private async codeReviewOf(task: TrackedTask, diff: string | null, recentCommits?: string[]): Promise<CodeReview | null> {
     if (!this.deps.brain || !diff) return null;
     try {
       const criteria = this.lastBriefs.get(task.key)?.criteria;
-      return await this.deps.brain.reviewCode({ task: task.key, app: appOf(task), title: task.title, body: task.body, diff, ...feedbackOf(task), ...(criteria ? { criteria } : {}) });
+      return await this.deps.brain.reviewCode({ task: task.key, app: appOf(task), title: task.title, body: task.body, diff, ...feedbackOf(task), ...(criteria ? { criteria } : {}), ...(recentCommits?.length ? { recentCommits } : {}) });
     } catch (error) {
       this.failed(task, "Code review", error);
       return null;
@@ -420,7 +422,7 @@ export class IssueLoop {
       const url = await this.deps.tracker.openMergeRequest(task.tracker, task.branch, baseBranch);
       return this.approve(task, `✅ Validé. Le travail est en revue : ${url}`, true);
     }
-    const outcome = await this.deps.tracker.merge(task.tracker, task.branch, baseBranch);
+    const outcome = await this.deps.tracker.merge(task.tracker, task.branch, baseBranch, task.commitSubject);
     if (outcome.status === "behind") {
       const what = outcome.files.length ? `les mêmes fichiers (${outcome.files.map((f) => f.split("/").pop()).join(", ")})` : "le même code";
       await this.deps.tracker.comment(task.tracker, note(
