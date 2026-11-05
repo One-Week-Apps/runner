@@ -141,6 +141,8 @@ export interface CodeReview {
   criteria?: CriterionCheck[];
   /** Subject of the merge commit, written like the project's commits (Conventional Commits otherwise). */
   commit?: string;
+  /** What changed, in the developer's words, 3 lines at most: the screen, the answer to the last KO, the side effects. */
+  changes?: string[];
   trace?: BrainTrace;
 }
 

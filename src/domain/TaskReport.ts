@@ -74,6 +74,10 @@ export interface ReportInput {
   /** Estimated cost of the delivery in dollars (list prices): brain calls plus Claude Code's work. */
   cost?: { brain: number; dev: number };  /** Other tasks' consignes carried by this attempt (same screen): one report and one reply for all. */
   grouped?: string[];
+  /** What changed, written by the code reviewer: read before the screenshots. */
+  changes?: string[];
+  /** Files of the attempt's diff. */
+  changedFiles?: string[];
 }
 
 interface Provenance {
@@ -91,6 +95,7 @@ function dollars(amount: number): string {
   return `${amount.toFixed(2).replace(".", ",")} $`;
 }
 
+const MAX_FILES_SHOWN = 5;
 const ICON: Record<Status, string> = { passed: "✅", failed: "❌", pending: "⏸" };
 
 function safeUrl(url: string): string {
@@ -153,6 +158,15 @@ export const TaskReport = {
     if (input.lostCaptures) {
       const n = input.lostCaptures;
       lines.push(`⚠️ ${n} capture${n > 1 ? "s" : ""} non publiée${n > 1 ? "s" : ""} : le stockage les a refusées.`, "");
+    }
+
+    const files = input.changedFiles ?? [];
+    if (input.changes?.length || files.length) {
+      const names = files.slice(0, MAX_FILES_SHOWN).map((file) => `\`${file.split("/").pop()!.replace(/`/g, "'")}\``);
+      const more = files.length > MAX_FILES_SHOWN ? ` +${files.length - MAX_FILES_SHOWN}` : "";
+      lines.push("📝 **Ce qui a changé**", ...(input.changes ?? []).map((change) => `- ${escape(change)}`));
+      if (files.length) lines.push(`- ${files.length} fichier${files.length > 1 ? "s" : ""} : ${names.join(", ")}${more}`);
+      lines.push("");
     }
 
     if (captures.length === 0) {

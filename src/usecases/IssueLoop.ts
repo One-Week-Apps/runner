@@ -251,6 +251,8 @@ export class IssueLoop {
       ...(lostCaptures ? { lostCaptures } : {}),
       ...(lesson ? { lesson: { text: lesson.text, scope: lesson.scope } } : {}),
       ...(current.members.length ? { grouped: current.members.map((m) => m.title) } : {}),
+      ...(code?.changes?.length ? { changes: code.changes } : {}),
+      ...(result.diff?.trim() ? { changedFiles: changedFiles(result.diff) } : {}),
     });
     this.costs.delete(current.key);
     this.notices.delete(current.key);

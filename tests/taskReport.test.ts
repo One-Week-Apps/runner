@@ -21,6 +21,22 @@ describe("TaskReport: an attempt's result comment", () => {
     expect(md).toContain("**Tentative 2** · Build ✅ · Tests ✅ · 2 scénarios");
   });
 
+  it("opens with what changed, before the screenshots, files named last", () => {
+    const md = TaskReport.render({
+      attempt: 2, buildStatus: "passed", testStatus: "passed", captures,
+      changes: ["Les titres passent sur 2 lignes", "Ton KO : le titre tient en XXXL"],
+      changedFiles: ["EFB/Home/ChapterCell.swift", "EFB/Theme.swift"],
+    });
+    const block = md.indexOf("📝 **Ce qui a changé**");
+    expect(block).toBeGreaterThan(0);
+    expect(block).toBeLessThan(md.indexOf("Scénario 1"));
+    expect(md).toContain("- Les titres passent sur 2 lignes\n- Ton KO : le titre tient en XXXL\n- 2 fichiers : `ChapterCell.swift`, `Theme.swift`");
+  });
+
+  it("says nothing about changes when Studio wrote none and no file changed", () => {
+    expect(TaskReport.render({ attempt: 1, buildStatus: "passed", testStatus: "passed", captures })).not.toContain("Ce qui a changé");
+  });
+
   it("renders one block per scenario, numbered in run order, steps in order", () => {
     const md = TaskReport.render({ attempt: 1, buildStatus: "passed", testStatus: "passed", captures });
     const s1 = md.indexOf("Scénario 1 : Jouer le niveau 1");

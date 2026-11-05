@@ -899,6 +899,19 @@ describe("IssueLoop: a dedicated code reviewer before the developer", () => {
     expect(tracker.commentsFor(7).at(-1)!).toContain("🔍 **Revue de code** : rien à redire.");
   });
 
+  it("opens the report with what the code reviewer says changed, and the files of the diff", async () => {
+    const brain = new FakeBrain();
+    brain.review_ = { verdict: "ok", remarks: [] };
+    brain.codeReview_ = { verdict: "ok", remarks: [], changes: ["Le titre est en vraie Luciole Bold"] };
+    const { tracker, compute, loop } = setup(brain);
+    tracker.open(7, "octocat", "Titre en gras", "Luciole en gras");
+    await loop.tick();
+
+    await loop.onJobResult(withDiff(compute.jobs[0].jobId));
+
+    expect(tracker.commentsFor(7).at(-1)!).toContain("📝 **Ce qui a changé**\n- Le titre est en vraie Luciole Bold\n- 1 fichier : `Title.swift`");
+  });
+
   it("fixes a hack spotted in the code before delivering", async () => {
     const brain = new FakeBrain();
     brain.review_ = { verdict: "ok", remarks: [] };
