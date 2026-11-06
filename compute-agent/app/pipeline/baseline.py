@@ -59,7 +59,8 @@ async def checkout_aside(runner: CommandRunner, *, repo_path: str, ref: str, tim
     """`ref` checked out in the clone's side worktree (`<clone>-base`), clean: the task's own clone stays untouched."""
     base_path = f"{repo_path}-base"
     if Path(base_path).exists():
-        steps = [["checkout", "--detach", ref], ["reset", "--hard"], ["clean", "-fd"]]
+        # Cleaned first: the red check leaves the base's app files there, and checkout would refuse to overwrite them.
+        steps = [["reset", "--hard"], ["clean", "-fd"], ["checkout", "--detach", ref]]
         cwd = base_path
     else:
         steps = [["worktree", "add", "--force", "--detach", base_path, ref]]

@@ -96,3 +96,14 @@ async def test_nothing_is_blamed_when_it_cannot_be_judged(tmp_path):
     assert await check(red_runner({("xcodebuild", "test-without-building"): CommandResult(65, "", "TEST FAILED")}), tmp_path) == []
     assert await check(red_runner({("git", "diff", "--name-status"): CommandResult(0, "A\tEFB/Home/Wrap.swift\n", "")}), tmp_path) == []
     assert await check(red_runner({("xcrun", "xcresulttool"): ran("OtherTests")}), tmp_path) == []
+
+
+async def test_the_side_worktree_is_cleaned_before_switching_commits(tmp_path):
+    # EscapeFromBlindness#17, 2026-11-06: the previous check left the base's app files there, and checkout refused.
+    (tmp_path / "EFB-base").mkdir()
+    runner = red_runner({("xcodebuild", "test-without-building"): CommandResult(65, "", "TEST FAILED")})
+
+    await check(runner, tmp_path)
+
+    in_aside = [args[1] for args, cwd in runner.calls if cwd == str(tmp_path / "EFB-base") and args[0] == "git"]
+    assert in_aside[:3] == ["reset", "clean", "checkout"]
