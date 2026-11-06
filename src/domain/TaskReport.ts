@@ -58,6 +58,8 @@ export interface ReportInput {
   notFixed?: string[];
   /** Commands or tools refused to Claude Code since the last report. */
   refused?: string[];
+  /** The task's screens on the old code (last frame of its failing test), by scenario. */
+  before?: { scenario: string; imageUrl: string }[];
   /** Out-of-scope remarks, each with the link that turns it into a new task. */
   /** `text`: the short label shown; `fix`: the decided fix, sent as is when the remark is added. */
   outOfScope?: { text: string; fix?: string; newTaskUrl: string }[];
@@ -184,6 +186,8 @@ export const TaskReport = {
         `<details${scenarios.length <= 2 || (forTask.size ? forTask.has(scenario) : s === 0) ? " open" : ""}>`,
         `<summary><b>Scénario ${s + 1} : ${escape(scenarioTitle(scenario))}</b></summary>`,
       );
+      const old = input.before?.find((b) => b.scenario === scenario);
+      if (old) lines.push("", `**Avant** (ancienne version, là où son test échoue) <br><img src="${safeUrl(old.imageUrl)}" width="160">`);
       const header = [`| Étape | ${devices.map(escape).join(" | ")} |`, `|---|${devices.map(() => "---").join("|")}|`];
       const row = (step: string, e: number) => {
         const cells = devices.map((device) => {

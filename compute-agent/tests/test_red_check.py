@@ -1,13 +1,15 @@
 import json
+from pathlib import Path
 from typing import Optional
 
 from app.pipeline.command_runner import CommandResult
-from app.pipeline.red_check import new_tests, green_without_the_change
+from app.pipeline.red_check import green_without_the_change, new_tests
 from app.pipeline.screenshots import Failure
 
 OK = CommandResult(0, "", "")
 BASE_TEST = "final class HomeTests: XCTestCase {\n    func testTitle() {}\n}\n"
-TASK_TEST = BASE_TEST.replace("}\n}", "}\n    func testChapterTitleWraps() {}\n}") + "final class ChapterUITests: XCTestCase {\n    func testLongTitle() { XCUIApplication() }\n}\n"
+TASK_TEST = (BASE_TEST.replace("}\n}", "}\n    func testChapterTitleWraps() {}\n}")
+             + "final class ChapterUITests: XCTestCase {\n    func testLongTitle() { XCUIApplication() }\n}\n")
 
 
 class ScriptedRunner:
@@ -60,12 +62,16 @@ def red_runner(overrides: Optional[dict] = None) -> ScriptedRunner:
     })
 
 
-async def check(runner, tmp_path, read=no_failures):
+async def red(runner, tmp_path, read=no_failures, keep=None):
     return await green_without_the_change(
         runner, repo_path=str(tmp_path / "EFB"), base_branch="master",
         test_ids=["EFBTests/HomeTests/testChapterTitleWraps", "EFBTests/HomeTests/testLineCount"],
-        scheme="EFB", container=None, simulator_id="SIM", read=read, list_dir=lambda _: [], timeout=10,
+        scheme="EFB", container=None, simulator_id="SIM", read=read, list_dir=lambda _: [], timeout=10, keep=keep,
     )
+
+
+async def check(runner, tmp_path, read=no_failures):
+    return (await red(runner, tmp_path, read)).vacuous
 
 
 async def test_a_new_test_that_passes_on_the_old_app_code_checks_nothing(tmp_path):
@@ -107,3 +113,30 @@ async def test_the_side_worktree_is_cleaned_before_switching_commits(tmp_path):
 
     in_aside = [args[1] for args, cwd in runner.calls if cwd == str(tmp_path / "EFB-base") and args[0] == "git"]
     assert in_aside[:3] == ["reset", "clean", "checkout"]
+
+
+async def test_the_screens_before_the_task_are_kept_from_the_red_bundle_which_is_then_deleted(tmp_path):
+    runner = red_runner({("xcodebuild", "test-without-building"): CommandResult(65, "", "TEST FAILED")})
+    seen = []
+
+    async def read(runner, *, result_bundle, timeout):
+        return [Failure(f"EFBTests/HomeTests/{t}", t) for t in ("testChapterTitleWraps", "testLineCount")]
+
+    async def keep(bundle):
+        seen.append(bundle)
+        return ["avant"]
+
+    result = await red(runner, tmp_path, read, keep)
+
+    assert result.before == ["avant"]
+    assert seen and seen[0].endswith("red.xcresult")
+    assert not Path(seen[0]).parent.exists()
+
+
+async def test_no_red_check_means_no_before(tmp_path):
+    runner = red_runner({("git", "diff", "--name-status"): CommandResult(0, "A\tEFB/Home/Wrap.swift\n", "")})
+
+    async def keep(bundle):
+        raise AssertionError("no bundle to read")
+
+    assert (await red(runner, tmp_path, keep=keep)).before == []

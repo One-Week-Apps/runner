@@ -1,5 +1,6 @@
 import json
 import logging
+import shutil
 import tempfile
 from pathlib import Path
 from typing import Awaitable, Callable, Optional
@@ -78,10 +79,14 @@ async def _replay_on_base(runner: CommandRunner, *, repo_path: str, base_branch:
     base_path = await checkout_aside(runner, repo_path=repo_path, ref=f"origin/{base_branch}", timeout=timeout)
     await install_dependencies(runner, repo_path=base_path, timeout=timeout, list_dir=list_dir)
     await run_build_stage(runner, repo_path=base_path, scheme=scheme, simulator_id=simulator_id, timeout=timeout, container=container)
-    bundle = str(Path(tempfile.mkdtemp(prefix="owa-base-")) / "base.xcresult")
+    bundle_dir = Path(tempfile.mkdtemp(prefix="owa-base-"))
+    bundle = str(bundle_dir / "base.xcresult")
     try:
         await run_test_stage(runner, repo_path=base_path, scheme=scheme, simulator_id=simulator_id, timeout=timeout,
                              container=container, result_bundle=bundle, only_testing=test_ids)
         return set()
     except TestStageError:
         return {failure.id for failure in await read(runner, result_bundle=bundle, timeout=timeout)}
+    finally:
+        # Only the failures matter: the bundle (videos of failing UI tests included) is not kept.
+        shutil.rmtree(bundle_dir, ignore_errors=True)

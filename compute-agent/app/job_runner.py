@@ -9,6 +9,7 @@ import httpx
 
 from app.models import JobCallbackBody, JobRequest
 from app.pipeline.baseline import failing_on_base
+from app.pipeline.before_captures import before_captures, last_frame_tool
 from app.pipeline.capture_helper import upgrade_capture_helper
 from app.pipeline.claude_dev import DevStageError, run_dev_stage
 from app.pipeline.command_runner import CommandRunner
@@ -125,6 +126,8 @@ async def run_job(
     dev_cost: Optional[float] = None
     dev_session: Optional[str] = None
     dev_denied: "list[str]" = []
+    before: list = []
+    job_dir: Optional[Path] = None
     related: list = []
     commits: list = []
     dev_error: Optional[str] = None
@@ -327,11 +330,18 @@ async def run_job(
         if outcome == "success":
             # TDD's red: a new test that also passes without the change proves nothing.
             base_branch = feature.base_branch or "main"
-            vacuous = await green_without_the_change(
+            keep = None
+            if job_dir:
+                # On the old code, the last frame of each failing test's video is the screen before the task.
+                async def keep(bundle: str, shots: Path = job_dir) -> list:
+                    tool = await last_frame_tool(runner, cache_dir=Path(repos_dir) / ".tools", timeout=timeout_seconds)
+                    return await before_captures(runner, result_bundle=bundle, output_dir=shots, base_url=base_url,
+                                                 job_id=job.job_id, tool=tool, timeout=timeout_seconds) if tool else []
+            vacuous, before = await green_without_the_change(
                 runner, repo_path=repo_path, base_branch=base_branch,
                 test_ids=await new_tests(runner, repo_path=repo_path, base_branch=base_branch, timeout=timeout_seconds),
                 scheme=target.scheme, container=target.container, simulator_id=simulator_ids[0],
-                read=read_failures, list_dir=list_dir, timeout=timeout_seconds,
+                read=read_failures, list_dir=list_dir, timeout=timeout_seconds, keep=keep,
             )
             if vacuous:
                 outcome, test_status = "failure", "failed"
@@ -360,6 +370,7 @@ async def run_job(
         dev_cost_usd=dev_cost,
         dev_session_id=dev_session,
         dev_denied=dev_denied,
+        before=before,
         related_branches=related,
         recent_commits=commits,
         dev_error=dev_error,
@@ -369,3 +380,6 @@ async def run_job(
         await post_callback(job.callback_url, body)
     except Exception:
         logger.exception("Failed to post callback for job %s", job.job_id)
+    if job_dir:
+        # The Runner has fetched the screenshots: the bundle (and the videos of failing tests) is no longer needed.
+        shutil.rmtree(job_dir / "result.xcresult", ignore_errors=True)

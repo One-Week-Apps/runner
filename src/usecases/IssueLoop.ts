@@ -61,6 +61,8 @@ export interface IssueJobResult {
   devError?: string | null;
   /** Commands or tools refused to Claude Code during this run. */
   devDenied?: string[] | null;
+  /** The task's screens on the old code, one per scenario of its new tests: for the developer, never for the review. */
+  before?: { scenario: string; screenshotUrl: string; device?: string | null }[] | null;
 }
 
 /** What the developer reads when Claude Code refused to work: the cause first, in plain words. */
@@ -118,6 +120,8 @@ export class IssueLoop {
   private readonly notices = new Map<string, string>();
   /** Commands refused to Claude Code since the last report, all internal rounds included. */
   private readonly denied = new Map<string, string[]>();
+  /** The screens before the task, kept until the report: an internal fix may not run the red check again. */
+  private readonly before = new Map<string, { scenario: string; imageUrl: string }[]>();
   /** Instructions Studio wrote while the task waited: its first attempt starts with them. */
   private readonly prepared = new Map<string, Brief>();
   /** The repository of the last attempt: at equal rank, staying on it saves a clone and a cold build. */
@@ -188,6 +192,15 @@ export class IssueLoop {
       seen.push({ scenario, step: node.nodeId, device, image: bytes, forTask: node.forTask });
     }
 
+    for (const shot of result.before ?? []) {
+      try {
+        const imageUrl = await this.deps.tracker.publishImage(task.tracker, `issue-${task.tracker.number}/avant/${shot.scenario}.png`, await this.deps.fetchImage(shot.screenshotUrl));
+        this.before.set(task.key, [...(this.before.get(task.key) ?? []).filter((b) => b.scenario !== shot.scenario), { scenario: shot.scenario, imageUrl }]);
+      } catch (error) {
+        this.warn(`Screen before the task (${shot.scenario}) not published`, error);
+      }
+    }
+
     let current = result.devSessionId ? task.continuesIn(result.devSessionId) : task;
     if (result.devDenied?.length) this.denied.set(task.key, [...new Set([...(this.denied.get(task.key) ?? []), ...result.devDenied])]);
     const diff = result.diff?.trim() ? result.diff : null;
@@ -243,6 +256,7 @@ export class IssueLoop {
       internalRounds: current.internalRounds,
       ...(stuck.length ? { notFixed: stuck } : {}),
       ...(this.denied.get(current.key)?.length ? { refused: this.denied.get(current.key) } : {}),
+      ...(this.before.get(current.key)?.length ? { before: this.before.get(current.key) } : {}),
       outOfScope: [
         ...(alreadyRed ? [{ ...alreadyRed, by: "le Runner (tests déjà rouges sur la base)" }] : []),
         ...(ux?.outOfScope ?? []).map((remark) => ({ ...remark, by: "la relecture UX" })),
@@ -268,6 +282,7 @@ export class IssueLoop {
     this.costs.delete(current.key);
     this.notices.delete(current.key);
     this.denied.delete(current.key);
+    this.before.delete(current.key);
     // A miss means nobody had flagged anything: if a reviewer asked for a fix, the KO proves them right.
     const reviews = [["ux", ux], ["code", code]] as const;
     const ran = reviews.filter(([, review]) => review);

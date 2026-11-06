@@ -6,8 +6,9 @@ import pytest
 
 import app.job_runner as job_runner_module
 from app.job_runner import run_job
-from app.models import JobRequest
+from app.models import BeforeCapture, JobRequest
 from app.pipeline.command_runner import CommandResult
+from app.pipeline.red_check import RedCheck
 from app.pipeline.screenshots import Failure
 
 SIMCTL_OUTPUT = json.dumps({"devices": {"com.apple.CoreSimulator.SimRuntime.iOS-27-0": [{"name": "iPhone 17e", "udid": "E", "state": "Booted"}]}})
@@ -243,6 +244,49 @@ async def test_invented_project_ids_are_made_random_before_the_build(mock_post_c
     assert "A1E5C0DE" not in (clone / "project.pbxproj").read_text()
     order = [tuple(c[:2]) for c in runner.calls]
     assert order.index(("claude", "-p")) < order.index(("git", "show")) < order.index(("xcodebuild", "build-for-testing"))
+
+
+async def test_the_screens_before_the_task_reach_the_runner(mock_post_callback, monkeypatch, tmp_path):
+    seen = {}
+
+    async def fake_red(runner, **kwargs):
+        seen["keep"] = kwargs.get("keep")
+        return RedCheck([], [BeforeCapture(scenario="testFin", screenshot_url="http://mac:8000/screenshots/job-7/avant-testFin.png")])
+
+    async def fake_new_tests(runner, **kwargs):
+        return ["EFBUITests/FinUITests/testFin"]
+
+    monkeypatch.setattr(job_runner_module, "green_without_the_change", fake_red)
+    monkeypatch.setattr(job_runner_module, "new_tests", fake_new_tests)
+
+    no_bundle = FakeCommandRunner(overrides={("xcrun", "xcresulttool"): CommandResult(1, "", "")})
+    await run_job(MANAGED_JOB, runner=no_bundle, timeout_seconds=10, repos_dir=tmp_path / "repos",
+                  screenshots_dir=tmp_path / "shots", base_url="http://mac:8000")
+
+    assert seen["keep"] is not None
+    assert [b.scenario for b in mock_post_callback.await_args.args[1].before] == ["testFin"]
+
+
+async def test_the_result_bundle_is_deleted_once_the_runner_has_the_report(mock_post_callback, tmp_path):
+    shots = tmp_path / "shots"
+
+    async def check_bundle_still_there(url, body):
+        assert (shots / "job-7" / "result.xcresult").exists()
+
+    mock_post_callback.side_effect = check_bundle_still_there
+    runner = FakeCommandRunner(overrides={("xcrun", "xcresulttool"): CommandResult(1, "", "")})
+    original = runner.run
+
+    async def run(args, *, cwd=None, timeout):
+        if args[:2] == ["xcodebuild", "test-without-building"]:
+            (shots / "job-7" / "result.xcresult").mkdir(parents=True)
+        return await original(args, cwd=cwd, timeout=timeout)
+
+    runner.run = run
+    await run_job(MANAGED_JOB, runner=runner, timeout_seconds=10, repos_dir=tmp_path / "repos", screenshots_dir=shots)
+
+    mock_post_callback.assert_awaited_once()
+    assert not (shots / "job-7" / "result.xcresult").exists()
 
 
 async def test_managed_job_commits_even_when_the_build_fails(mock_post_callback, tmp_path):
@@ -717,7 +761,7 @@ async def test_a_new_test_that_passes_without_the_change_fails_the_tests(mock_po
         return ["EFBTests/HomeTests/testChapterTitleWraps"]
 
     async def still_green(runner, *, test_ids, **kwargs):
-        return test_ids
+        return RedCheck(test_ids, [])
 
     monkeypatch.setattr(job_runner_module, "new_tests", added)
     monkeypatch.setattr(job_runner_module, "green_without_the_change", still_green)
@@ -737,7 +781,7 @@ async def test_new_tests_red_without_the_change_keep_the_task_green(mock_post_ca
         return ["EFBTests/HomeTests/testChapterTitleWraps"]
 
     async def red(runner, **kwargs):
-        return []
+        return RedCheck([], [])
 
     monkeypatch.setattr(job_runner_module, "new_tests", added)
     monkeypatch.setattr(job_runner_module, "green_without_the_change", red)

@@ -52,6 +52,13 @@ class NodeCapture(CamelModel):
     voice_over: Optional[list[str]] = None
 
 
+class BeforeCapture(CamelModel):
+    """The task's target screen on the old code: the last frame of a failing test's video in the red check."""
+    scenario: str
+    screenshot_url: str
+    device: Optional[str] = None
+
+
 class RelatedBranch(CamelModel):
     branch: str
     files: list[str]
@@ -73,6 +80,8 @@ class JobCallbackBody(CamelModel):
     dev_session_id: Optional[str] = None
     # Commands or tools refused to Claude Code: a refusal can leave a fix undone without anyone noticing.
     dev_denied: list[str] = []
+    # The screens as they were before the task, one per scenario of its new tests (for the developer only).
+    before: list[BeforeCapture] = []
     # Other unmerged tasks touching the same files: a conflict is coming.
     related_branches: list[RelatedBranch] = []
     # Commit subjects of the base written by people (not by agents): the convention Studio follows for the merge.

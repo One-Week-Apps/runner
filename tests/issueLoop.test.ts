@@ -770,6 +770,24 @@ describe("IssueLoop: the Runner fixes its own remarks before delivering", () => 
     expect(report).toContain("- `xcodebuild test`");
   });
 
+  it("shows the screen before the task to the developer only, and keeps it through internal fixes", async () => {
+    const brain = new FakeBrain();
+    brain.review_ = { verdict: "to_fix", remarks: [{ label: "A", fix: "A" }] };
+    const { tracker, compute, loop } = setup(brain);
+    tracker.open(7);
+    await loop.tick();
+    const before = [{ scenario: "testJouer", screenshotUrl: "http://mac:8000/screenshots/j/avant-testJouer.png", device: "iPhone 17e" }];
+
+    await loop.onJobResult({ ...result(compute.jobs[0].jobId, [shot("Accueil", "2026-10-17T10:00:00Z")]), before });
+    brain.review_ = { verdict: "ok", remarks: [] };
+    await loop.onJobResult(result(compute.jobs[1].jobId, [shot("Accueil", "2026-10-17T10:05:00Z")]));
+
+    const report = tracker.commentsFor(7).at(-1)!;
+    expect(report).toContain("**Avant** (ancienne version, là où son test échoue)");
+    expect(report).toContain('<img src="https://hosted/issue-7/avant/testJouer.png" width="160">');
+    expect(brain.reviews.every((review) => review.captures.length === 1)).toBe(true);
+  });
+
   it("resets internal rounds and opens a new thread after a developer KO", async () => {
     const brain = new FakeBrain();
     brain.review_ = { verdict: "ok", remarks: [] };
