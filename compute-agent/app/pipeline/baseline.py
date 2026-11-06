@@ -55,20 +55,26 @@ async def failing_on_base(
         return set()
 
 
-async def _replay_on_base(runner: CommandRunner, *, repo_path: str, base_branch: str, test_ids: "list[str]", scheme: str,
-                          container: Optional[list], simulator_id: str, read: ReadFailures,
-                          list_dir: Callable[[str], list], timeout: float) -> "set[str]":
+async def checkout_aside(runner: CommandRunner, *, repo_path: str, ref: str, timeout: float) -> str:
+    """`ref` checked out in the clone's side worktree (`<clone>-base`), clean: the task's own clone stays untouched."""
     base_path = f"{repo_path}-base"
     if Path(base_path).exists():
-        steps = [["checkout", "--detach", f"origin/{base_branch}"], ["reset", "--hard"], ["clean", "-fd"]]
+        steps = [["checkout", "--detach", ref], ["reset", "--hard"], ["clean", "-fd"]]
         cwd = base_path
     else:
-        steps = [["worktree", "add", "--force", "--detach", base_path, f"origin/{base_branch}"]]
+        steps = [["worktree", "add", "--force", "--detach", base_path, ref]]
         cwd = repo_path
     for step in steps:
         result = await runner.run(["git", *step], cwd=cwd, timeout=timeout)
         if result.exit_code != 0 or result.timed_out:
             raise RuntimeError(f"git {step[0]} failed: {result.stderr}")
+    return base_path
+
+
+async def _replay_on_base(runner: CommandRunner, *, repo_path: str, base_branch: str, test_ids: "list[str]", scheme: str,
+                          container: Optional[list], simulator_id: str, read: ReadFailures,
+                          list_dir: Callable[[str], list], timeout: float) -> "set[str]":
+    base_path = await checkout_aside(runner, repo_path=repo_path, ref=f"origin/{base_branch}", timeout=timeout)
     await install_dependencies(runner, repo_path=base_path, timeout=timeout, list_dir=list_dir)
     await run_build_stage(runner, repo_path=base_path, scheme=scheme, simulator_id=simulator_id, timeout=timeout, container=container)
     bundle = str(Path(tempfile.mkdtemp(prefix="owa-base-")) / "base.xcresult")

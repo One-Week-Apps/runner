@@ -19,6 +19,7 @@ from app.pipeline.preflight import (
     install_dependencies,
     pick_simulators,
 )
+from app.pipeline.red_check import new_tests, green_without_the_change
 from app.pipeline.screenshots import export_screenshots, read_failures, read_ran_suites
 from app.pipeline.test_selection import task_ui_tests, ui_tests_to_skip
 from app.pipeline.workspace import catch_up_with_base, commit_attempt, human_commits, prepare_workspace, push_branch, related_branches, task_diff
@@ -314,6 +315,20 @@ async def run_job(
                 await push_branch(runner, repo_path=repo_path, branch=feature.branch, timeout=timeout_seconds)
         except PreflightError:
             logger.exception("Could not commit or push attempt for job %s", job.job_id)
+        if outcome == "success":
+            # TDD's red: a new test that also passes without the change proves nothing.
+            base_branch = feature.base_branch or "main"
+            vacuous = await green_without_the_change(
+                runner, repo_path=repo_path, base_branch=base_branch,
+                test_ids=await new_tests(runner, repo_path=repo_path, base_branch=base_branch, timeout=timeout_seconds),
+                scheme=target.scheme, container=target.container, simulator_id=simulator_ids[0],
+                read=read_failures, list_dir=list_dir, timeout=timeout_seconds,
+            )
+            if vacuous:
+                outcome, test_status = "failure", "failed"
+                failures = [f"{test.split('/', 1)[1]} passe aussi sans ton changement : il ne vérifie pas ce que la tâche demande. "
+                            "Fais-le échouer sur l'ancien code (une assertion sur ce qui change), sans toucher au code pour lui" for test in vacuous]
+                await report("test", "failed")
         diff = await task_diff(runner, repo_path=repo_path, base_branch=feature.base_branch or "main", timeout=timeout_seconds) or None
         try:
             related = await related_branches(runner, repo_path=repo_path, base_branch=feature.base_branch or "main",

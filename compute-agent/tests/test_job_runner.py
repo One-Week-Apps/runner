@@ -687,3 +687,39 @@ async def test_the_callback_carries_the_projects_own_commit_subjects(mock_post_c
 
     body = mock_post_callback.await_args.args[1]
     assert body.model_dump(by_alias=True)["recentCommits"] == ["refactor(app coordinator): remove some unused code"]
+
+
+async def test_a_new_test_that_passes_without_the_change_fails_the_tests(mock_post_callback, tmp_path, monkeypatch):
+    # TDD's red: the test must fail on the app code from before the task, otherwise it checks nothing.
+    async def added(runner, **kwargs):
+        return ["EFBTests/HomeTests/testChapterTitleWraps"]
+
+    async def still_green(runner, *, test_ids, **kwargs):
+        return test_ids
+
+    monkeypatch.setattr(job_runner_module, "new_tests", added)
+    monkeypatch.setattr(job_runner_module, "green_without_the_change", still_green)
+
+    await run_job(MANAGED_JOB, runner=FakeCommandRunner(), timeout_seconds=10, repos_dir=tmp_path)
+
+    body = mock_post_callback.await_args.args[1]
+    assert (body.outcome, body.test_status) == ("failure", "failed")
+    assert body.failed_tests == [
+        "HomeTests/testChapterTitleWraps passe aussi sans ton changement : il ne vérifie pas ce que la tâche demande. "
+        "Fais-le échouer sur l'ancien code (une assertion sur ce qui change), sans toucher au code pour lui",
+    ]
+
+
+async def test_new_tests_red_without_the_change_keep_the_task_green(mock_post_callback, tmp_path, monkeypatch):
+    async def added(runner, **kwargs):
+        return ["EFBTests/HomeTests/testChapterTitleWraps"]
+
+    async def red(runner, **kwargs):
+        return []
+
+    monkeypatch.setattr(job_runner_module, "new_tests", added)
+    monkeypatch.setattr(job_runner_module, "green_without_the_change", red)
+
+    await run_job(MANAGED_JOB, runner=FakeCommandRunner(), timeout_seconds=10, repos_dir=tmp_path)
+
+    assert mock_post_callback.await_args.args[1].outcome == "success"
