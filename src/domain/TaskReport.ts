@@ -54,6 +54,10 @@ export interface ReportInput {
   fixedInternally?: string[];
   /** Attempts the Runner restarted on its own before this report. */
   internalRounds?: number;
+  /** Items an internal round asked for that came back unchanged: the Runner stopped retrying them. */
+  notFixed?: string[];
+  /** Commands or tools refused to Claude Code since the last report. */
+  refused?: string[];
   /** Out-of-scope remarks, each with the link that turns it into a new task. */
   /** `text`: the short label shown; `fix`: the decided fix, sent as is when the remark is added. */
   outOfScope?: { text: string; fix?: string; newTaskUrl: string }[];
@@ -246,6 +250,18 @@ export const TaskReport = {
 
     if (input.lesson) {
       lines.push(`📚 Si tu valides, Studio retiendra pour ${lessonScope(input.lesson.scope)} : ${escape(input.lesson.text)}`, "");
+    }
+
+    if (input.notFixed?.length) {
+      lines.push(`⚠️ **Toujours pas corrigé après correction interne** : ${input.notFixed.map(escape).join(" · ")}`, "");
+    }
+
+    if (input.refused?.length) {
+      lines.push(
+        `<details><summary>🚫 Commandes refusées à Claude Code : ${input.refused.length}</summary>`, "",
+        ...input.refused.map((command) => `- \`${command.replace(/`/g, "'")}\``),
+        "", "</details>", "",
+      );
     }
 
     if (input.fixedInternally?.length) {

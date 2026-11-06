@@ -19,8 +19,10 @@ export interface TrackedTaskProps {
   progress?: ProgressMap;
   /** Fix rounds the Runner started on its own since the developer's last reply. */
   internalRounds?: number;
-  /** Items handled internally during those rounds, listed (collapsed) in the report. */
+  /** Items fixed internally during those rounds (requested, then gone from the next check), listed in the report. */
   fixedInternally?: string[];
+  /** Items requested by the last internal round, not yet checked. */
+  requested?: string[];
   /** All internal fixes since the start: they do not count as attempts for the developer. */
   internalTotal?: number;
   /** Reviewers who approved the last delivered report, and the knowledge version guiding them. */
@@ -160,6 +162,17 @@ export class TrackedTask {
   get internalRounds(): number { return this.props.internalRounds ?? 0; }
   get fixedInternally(): string[] { return this.props.fixedInternally ?? []; }
 
+  /** Items the last internal round asked for and still open after it: another round would not fix them. */
+  stuckOn(open: string[]): string[] {
+    return (this.props.requested ?? []).filter((item) => open.includes(item));
+  }
+
+  /** The check of an internal round: what it asked for and is gone counts as fixed. */
+  settle(open: string[]): TrackedTask {
+    const done = (this.props.requested ?? []).filter((item) => !open.includes(item));
+    return this.with({ fixedInternally: [...new Set([...this.fixedInternally, ...done])], requested: [] });
+  }
+
   is(status: TrackedStatus): boolean { return this.props.status === status; }
   runsJob(jobId: string): boolean { return this.props.currentJobId === jobId; }
   needsQueueNotice(): boolean { return this.is("queued") && !this.props.queueNoticeSent && this.props.attempts === 0; }
@@ -184,7 +197,7 @@ export class TrackedTask {
   /** The report is published: waiting for the developer; the next attempt opens a new progress thread. */
   finish(delivery: Delivery = { approvedBy: [] }): TrackedTask {
     return this.with({
-      status: "awaiting_reply", currentJobId: null, progressCommentId: null, internalRounds: 0, fixedInternally: [],
+      status: "awaiting_reply", currentJobId: null, progressCommentId: null, internalRounds: 0, fixedInternally: [], requested: [],
       approvedBy: delivery.approvedBy, approvedWith: delivery.knowledge, lesson: delivery.lesson ?? null, commit: delivery.commit,
     });
   }
@@ -221,12 +234,12 @@ export class TrackedTask {
     return this.with({
       status: "queued", currentJobId: null, lastFeedback: feedback,
       internalRounds: this.internalRounds + 1, internalTotal: (this.props.internalTotal ?? 0) + 1,
-      fixedInternally: [...new Set([...this.fixedInternally, ...points])],
+      requested: points,
     });
   }
 
   retry(feedback: string): TrackedTask {
-    return this.with({ status: "queued", lastFeedback: feedback, developerFeedback: feedback, approvedBy: [], approvedWith: undefined, lesson: null });
+    return this.with({ status: "queued", lastFeedback: feedback, developerFeedback: feedback, requested: [], approvedBy: [], approvedWith: undefined, lesson: null });
   }
 
   /** Issue closed (or label removed): the task leaves the queue. A job already started runs to the end. */

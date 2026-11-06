@@ -665,14 +665,13 @@ describe("IssueLoop: the report says what breaks", () => {
     await loop.onProgress(compute.jobs[1].jobId, { stage: "dev", status: "started" });
     expect(tracker.edits.at(-1)!.body).toContain("Tentative 1 lancée");
     await loop.onJobResult(failing(compute.jobs[1].jobId));
-    await loop.onJobResult(failing(compute.jobs[2].jobId));
 
-    // Two internal rounds were not enough: the report says so.
-    expect(compute.jobs).toHaveLength(3);
+    // The same failure came back after a fix: another round would not help, the report says so.
+    expect(compute.jobs).toHaveLength(2);
     const report = tracker.commentsFor(7).at(-1)!;
     expect(report).toContain("Suite/test_x (iPhone 17e) : boom");
     expect(report).toContain("**Tentative 1** · Build ✅ · Tests ❌");
-    expect(report).toContain("2 corrections internes avant de te livrer");
+    expect(report).toContain("⚠️ **Toujours pas corrigé après correction interne** : Test en échec");
   });
 });
 
@@ -711,6 +710,64 @@ describe("IssueLoop: the Runner fixes its own remarks before delivering", () => 
     expect(report).toContain("1 correction interne avant de te livrer");
     expect(report).toContain("Version masquée par les tuiles");
     expect(report).toContain("[➕ Ajouter](https://new/One-Week-Apps/EFB?title=Titres%20de%20chapitres%20en%20taille%20fixe)");
+  });
+
+  it("stops when the same remarks come back, and only lists as fixed what really was", async () => {
+    const brain = new FakeBrain();
+    const apostrophe = { label: "Apostrophe droite", fix: "Mets ’" };
+    const ids = { label: "Identifiants non aléatoires", fix: "Génère-les avec uuidgen" };
+    brain.review_ = { verdict: "to_fix", remarks: [apostrophe, ids] };
+    const { tracker, compute, loop } = setup(brain);
+    tracker.open(7);
+    await loop.tick();
+
+    await loop.onJobResult(result(compute.jobs[0].jobId, [shot("Accueil", "2026-10-17T10:00:00Z")]));
+    expect(compute.jobs).toHaveLength(2);
+
+    brain.review_ = { verdict: "to_fix", remarks: [ids] };
+    await loop.onJobResult(result(compute.jobs[1].jobId, [shot("Accueil", "2026-10-17T10:05:00Z")]));
+
+    expect(compute.jobs).toHaveLength(2);
+    const report = tracker.commentsFor(7).at(-1)!;
+    expect(report).toContain("⚠️ **Toujours pas corrigé après correction interne** : Identifiants non aléatoires");
+    const fixed = report.slice(report.indexOf("avant de te livrer : "), report.indexOf("</details>", report.indexOf("avant de te livrer : ")));
+    expect(fixed).toContain("1 point traité");
+    expect(fixed).toContain("- Apostrophe droite");
+    expect(fixed).not.toContain("Identifiants non aléatoires");
+  });
+
+  it("keeps fixing while new remarks come up", async () => {
+    const brain = new FakeBrain();
+    brain.review_ = { verdict: "to_fix", remarks: [{ label: "A", fix: "A" }] };
+    const { tracker, compute, loop } = setup(brain);
+    tracker.open(7);
+    await loop.tick();
+
+    await loop.onJobResult(result(compute.jobs[0].jobId, [shot("Accueil", "2026-10-17T10:00:00Z")]));
+    brain.review_ = { verdict: "to_fix", remarks: [{ label: "A", fix: "A" }, { label: "B", fix: "B" }] };
+    await loop.onJobResult(result(compute.jobs[1].jobId, [shot("Accueil", "2026-10-17T10:05:00Z")]));
+
+    expect(compute.jobs).toHaveLength(3);
+    expect(compute.jobs[2].feature.lastFeedback).toContain("- A");
+    expect(compute.jobs[2].feature.lastFeedback).toContain("- B");
+    expect(tracker.commentsFor(7)).toHaveLength(1);
+  });
+
+  it("tells the developer which commands Claude Code was refused, across internal rounds", async () => {
+    const brain = new FakeBrain();
+    brain.review_ = { verdict: "to_fix", remarks: [{ label: "A", fix: "A" }] };
+    const { tracker, compute, loop } = setup(brain);
+    tracker.open(7);
+    await loop.tick();
+
+    await loop.onJobResult({ ...result(compute.jobs[0].jobId, [shot("Accueil", "2026-10-17T10:00:00Z")]), devDenied: ["uuidgen | tr -d -"] });
+    brain.review_ = { verdict: "ok", remarks: [] };
+    await loop.onJobResult({ ...result(compute.jobs[1].jobId, [shot("Accueil", "2026-10-17T10:05:00Z")]), devDenied: ["uuidgen | tr -d -", "xcodebuild test"] });
+
+    const report = tracker.commentsFor(7).at(-1)!;
+    expect(report).toContain("🚫 Commandes refusées à Claude Code : 2");
+    expect(report).toContain("- `uuidgen | tr -d -`");
+    expect(report).toContain("- `xcodebuild test`");
   });
 
   it("resets internal rounds and opens a new thread after a developer KO", async () => {
@@ -935,7 +992,8 @@ describe("IssueLoop: a dedicated code reviewer before the developer", () => {
     tracker.open(7);
     await loop.tick();
 
-    for (let round = 0; round <= 2; round++) await loop.onJobResult(withDiff(compute.jobs[round].jobId));
+    // The same remark comes back after the fix: the Runner stops and delivers.
+    for (let round = 0; round <= 1; round++) await loop.onJobResult(withDiff(compute.jobs[round].jobId));
 
     const report = tracker.commentsFor(7).at(-1)!;
     expect(report).toContain("🔍 **Revue de code** : à corriger");
@@ -1015,7 +1073,7 @@ describe("IssueLoop: reviewer reliability is measured", () => {
     await loop.tick();
     await loop.onJobResult(result(compute.jobs[0].jobId, [shot]));
     brain.review_ = { verdict: "to_fix", remarks: [{ label: "Accueil : titre trop petit", fix: "Large Title" }] };
-    for (let round = 1; round <= 3; round++) await loop.onJobResult(result(compute.jobs[round].jobId, [shot]));
+    for (let round = 1; round <= 2; round++) await loop.onJobResult(result(compute.jobs[round].jobId, [shot]));
 
     tracker.reply(7, "OK");
     tracker.reply(8, "KO : titre trop petit");
@@ -1139,8 +1197,8 @@ describe("IssueLoop: a miss only counts when nobody had flagged anything", () =>
     tracker.open(7);
     await loop.tick();
     const shot = { nodeId: "Accueil", screenshotUrl: "http://mac/a.png", action: null, capturedAt: "t", scenario: "testJouer", device: "iPhone 17e" };
-    for (let round = 0; round <= 2; round++) await loop.onJobResult({ ...result(compute.jobs[round].jobId, [shot]), diff: "d" });
-    expect(brain.reviews).toHaveLength(3);
+    for (let round = 0; round <= 1; round++) await loop.onJobResult({ ...result(compute.jobs[round].jobId, [shot]), diff: "d" });
+    expect(brain.reviews).toHaveLength(2);
 
     tracker.reply(7, "KO : teste l'écran, pas les fichiers");
     await loop.tick();

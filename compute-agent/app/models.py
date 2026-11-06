@@ -71,6 +71,8 @@ class JobCallbackBody(CamelModel):
     dev_cost_usd: Optional[float] = None
     # Claude Code session of this run, resumable by the next fix.
     dev_session_id: Optional[str] = None
+    # Commands or tools refused to Claude Code: a refusal can leave a fix undone without anyone noticing.
+    dev_denied: list[str] = []
     # Other unmerged tasks touching the same files: a conflict is coming.
     related_branches: list[RelatedBranch] = []
     # Commit subjects of the base written by people (not by agents): the convention Studio follows for the merge.

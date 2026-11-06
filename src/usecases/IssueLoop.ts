@@ -59,6 +59,8 @@ export interface IssueJobResult {
   recentCommits?: string[];
   /** Claude Code did not work at all (usage limit, login…), in its own words. */
   devError?: string | null;
+  /** Commands or tools refused to Claude Code during this run. */
+  devDenied?: string[] | null;
 }
 
 /** What the developer reads when Claude Code refused to work: the cause first, in plain words. */
@@ -114,6 +116,8 @@ export class IssueLoop {
   private readonly lessonDrafts = new Map<string, Promise<Lesson | null>>();
   /** Why Studio declined part of the current delivery (quota, plan), shown as is in the report. */
   private readonly notices = new Map<string, string>();
+  /** Commands refused to Claude Code since the last report, all internal rounds included. */
+  private readonly denied = new Map<string, string[]>();
   /** Instructions Studio wrote while the task waited: its first attempt starts with them. */
   private readonly prepared = new Map<string, Brief>();
   /** The repository of the last attempt: at equal rank, staying on it saves a clone and a cold build. */
@@ -185,6 +189,7 @@ export class IssueLoop {
     }
 
     let current = result.devSessionId ? task.continuesIn(result.devSessionId) : task;
+    if (result.devDenied?.length) this.denied.set(task.key, [...new Set([...(this.denied.get(task.key) ?? []), ...result.devDenied])]);
     const diff = result.diff?.trim() ? result.diff : null;
     if (diff) current = current.changed(changedFiles(diff));
     // Claude Code refused at once (usage limit, login): nothing to review or fix, the developer must know why.
@@ -208,10 +213,14 @@ export class IssueLoop {
     this.spend(current.key, "dev", result.devCostUsd ?? undefined);
 
     const toFix = Corrections.from(result, ux, code);
-    if (toFix.length > 0 && current.canCorrectInternally(MAX_INTERNAL_ROUNDS)) {
-      await this.deps.store.save(current.correctInternally(Corrections.feedback(toFix), toFix.map((point) => point.label)));
+    const open = toFix.map((point) => point.label);
+    // Only the same points again: the last round could not fix them (a refused command…), another one would not either.
+    const stuck = current.stuckOn(open);
+    current = current.settle(open);
+    if (toFix.length > stuck.length && current.canCorrectInternally(MAX_INTERNAL_ROUNDS)) {
+      await this.deps.store.save(current.correctInternally(Corrections.feedback(toFix), open));
     } else {
-      await this.deliver(current, result, captures, lostCaptures, ux, code);
+      await this.deliver(current, result, captures, lostCaptures, ux, code, stuck);
     }
     await this.discover(); // a task closed during the job must not start
     await this.startNextIfIdle();
@@ -219,7 +228,7 @@ export class IssueLoop {
   }
 
   /** The report goes to the developer; the task then waits for their reply. */
-  private async deliver(current: TrackedTask, result: IssueJobResult, captures: ReportCapture[], lostCaptures: number, ux: UxReview | null, code: CodeReview | null): Promise<void> {
+  private async deliver(current: TrackedTask, result: IssueJobResult, captures: ReportCapture[], lostCaptures: number, ux: UxReview | null, code: CodeReview | null, stuck: string[] = []): Promise<void> {
     const { repo } = current.tracker;
     const { baseBranch } = this.deps.config.repos[repo];
     const alreadyRed = Corrections.preexisting(result.preexistingFailures ?? [], baseBranch);
@@ -232,6 +241,8 @@ export class IssueLoop {
       failedTests: Corrections.failures(result.failedTests ?? []).map((point) => point.replace(/^Test en échec : /, "")),
       fixedInternally: current.fixedInternally,
       internalRounds: current.internalRounds,
+      ...(stuck.length ? { notFixed: stuck } : {}),
+      ...(this.denied.get(current.key)?.length ? { refused: this.denied.get(current.key) } : {}),
       outOfScope: [
         ...(alreadyRed ? [{ ...alreadyRed, by: "le Runner (tests déjà rouges sur la base)" }] : []),
         ...(ux?.outOfScope ?? []).map((remark) => ({ ...remark, by: "la relecture UX" })),
@@ -256,6 +267,7 @@ export class IssueLoop {
     });
     this.costs.delete(current.key);
     this.notices.delete(current.key);
+    this.denied.delete(current.key);
     // A miss means nobody had flagged anything: if a reviewer asked for a fix, the KO proves them right.
     const reviews = [["ux", ux], ["code", code]] as const;
     const ran = reviews.filter(([, review]) => review);

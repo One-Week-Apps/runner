@@ -160,3 +160,36 @@ async def test_a_refusal_says_why_even_when_stderr_is_empty():
 
     assert raised.value.reason == "Claude AI usage limit reached|1792771200"
     assert "usage limit" in str(raised.value)
+
+
+def test_the_prompt_tells_claude_code_what_it_may_run_and_what_the_runner_does():
+    for prompt in (
+        build_prompt(description="Écran de fin", instruction="initial_dev", last_feedback=None),
+        build_prompt(description="Écran de fin", instruction="iteration_feedback", last_feedback="corrige"),
+    ):
+        assert "le Runner compile" in prompt
+        assert "Read, Grep et Glob" in prompt
+        assert "plutil -lint" in prompt
+
+
+async def test_the_commands_refused_to_claude_code_are_returned_once_each():
+    output = json.dumps({"is_error": False, "session_id": "s", "permission_denials": [
+        {"tool_name": "Bash", "tool_use_id": "1", "tool_input": {"command": "uuidgen | tr -d - | cut -c1-24", "description": "x"}},
+        {"tool_name": "Bash", "tool_use_id": "2", "tool_input": {"command": "uuidgen | tr -d - | cut -c1-24"}},
+        {"tool_name": "WebFetch", "tool_use_id": "3", "tool_input": {"url": "https://example.com"}},
+    ]})
+    runner = FakeCommandRunner(CommandResult(0, output, ""))
+
+    outcome = await run_dev_stage(runner, repo_path="/repo", description="d", instruction="initial_dev",
+                                  last_feedback=None, timeout=10)
+
+    assert outcome.denied == ["uuidgen | tr -d - | cut -c1-24", "WebFetch"]
+
+
+async def test_no_refusal_means_an_empty_list():
+    runner = FakeCommandRunner(CommandResult(0, json.dumps({"is_error": False}), ""))
+
+    outcome = await run_dev_stage(runner, repo_path="/repo", description="d", instruction="initial_dev",
+                                  last_feedback=None, timeout=10)
+
+    assert outcome.denied == []

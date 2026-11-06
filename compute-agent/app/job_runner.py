@@ -12,6 +12,7 @@ from app.pipeline.baseline import failing_on_base
 from app.pipeline.capture_helper import upgrade_capture_helper
 from app.pipeline.claude_dev import DevStageError, run_dev_stage
 from app.pipeline.command_runner import CommandRunner
+from app.pipeline.pbxproj_ids import randomize_project_ids
 from app.pipeline.preflight import (
     PreflightError,
     checkout_branch,
@@ -19,7 +20,7 @@ from app.pipeline.preflight import (
     install_dependencies,
     pick_simulators,
 )
-from app.pipeline.red_check import new_tests, green_without_the_change
+from app.pipeline.red_check import green_without_the_change, new_tests
 from app.pipeline.screenshots import export_screenshots, read_failures, read_ran_suites
 from app.pipeline.test_selection import task_ui_tests, ui_tests_to_skip
 from app.pipeline.workspace import catch_up_with_base, commit_attempt, human_commits, prepare_workspace, push_branch, related_branches, task_diff
@@ -123,6 +124,7 @@ async def run_job(
     diff: Optional[str] = None
     dev_cost: Optional[float] = None
     dev_session: Optional[str] = None
+    dev_denied: "list[str]" = []
     related: list = []
     commits: list = []
     dev_error: Optional[str] = None
@@ -193,7 +195,7 @@ async def run_job(
         await report("dev", "started")
         watcher = asyncio.get_running_loop().create_task(watch_dev(runner, repo_path, report, dev_watch_seconds)) if job.progress_url else None
         try:
-            dev_cost, dev_session = await run_dev_stage(
+            dev_cost, dev_session, dev_denied = await run_dev_stage(
                 runner,
                 repo_path=repo_path,
                 description=feature.description,
@@ -207,6 +209,13 @@ async def run_job(
                 watcher.cancel()
 
         await report("dev", "passed")
+        if managed:
+            try:
+                fixed = await randomize_project_ids(runner, repo_path=repo_path, base_branch=feature.base_branch or "main", timeout=timeout_seconds)
+                if fixed:
+                    logger.info("Random ids written in %s for job %s", ", ".join(fixed), job.job_id)
+            except Exception:
+                logger.warning("Could not check the project ids for job %s", job.job_id, exc_info=True)
 
         await report("build", "started")
         try:
@@ -350,6 +359,7 @@ async def run_job(
         diff=diff,
         dev_cost_usd=dev_cost,
         dev_session_id=dev_session,
+        dev_denied=dev_denied,
         related_branches=related,
         recent_commits=commits,
         dev_error=dev_error,

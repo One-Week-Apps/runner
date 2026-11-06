@@ -28,9 +28,11 @@ def _reason(result) -> str:
 
 
 class DevOutcome(NamedTuple):
-    """Estimated cost of the work (list prices) and the Claude Code session the next fix can resume."""
+    """Estimated cost of the work (list prices), the Claude Code session the next fix can resume, and what it
+    was refused (one entry per command or tool): a refusal can leave a fix undone without anyone noticing."""
     cost_usd: Optional[float]
     session_id: Optional[str]
+    denied: "list[str]" = []
 
 
 # What the developer's Claude Code may do in the managed clone: read and edit code, plus a few
@@ -42,14 +44,37 @@ ALLOWED_TOOLS = [
 ]
 
 
+# Without it, Claude Code tries to build, test or `cat` files, gets refused and loses turns (or a fix).
+FRAME = (
+    "\n\nCadre de travail : le Runner compile, lance les tests et commite après toi : ne lance ni build, ni tests, "
+    "ni simulateur. Pour lire et chercher, utilise Read, Grep et Glob (pas cat, head, grep ni rg). Les seules commandes "
+    "permises sont git status, git diff, git log, ls, xcodebuild -list et plutil -lint ; toute autre sera refusée. "
+    "Si une consigne demande une autre commande, obtiens le résultat autrement (par exemple, écris toi-même une "
+    "valeur hexadécimale aléatoire) ; si c'est impossible, dis-le en une ligne au début de ta réponse."
+)
+
+
 def build_prompt(*, description: str, instruction: str, last_feedback: Optional[str]) -> str:
     if instruction == "iteration_feedback" and last_feedback:
         return (
             f"Voici la feature à développer : {description}\n\n"
             f"La tentative précédente a été rejetée avec le retour suivant : {last_feedback}\n"
             "Corrige le code en conséquence."
-        )
-    return f"Développe la feature suivante : {description}"
+        ) + FRAME
+    return f"Développe la feature suivante : {description}" + FRAME
+
+
+def _denied(parsed: dict) -> "list[str]":
+    """`permission_denials` of `claude -p`: the Bash command itself, or the tool name."""
+    seen: "list[str]" = []
+    for denial in parsed.get("permission_denials") or []:
+        if not isinstance(denial, dict):
+            continue
+        command = (denial.get("tool_input") or {}).get("command") if denial.get("tool_name") == "Bash" else None
+        what = (command.strip()[:160] if isinstance(command, str) and command.strip() else str(denial.get("tool_name") or "?"))
+        if what not in seen:
+            seen.append(what)
+    return seen
 
 
 async def run_dev_stage(
@@ -100,7 +125,11 @@ async def run_dev_stage(
     # One log line per run, to judge session resumption on numbers.
     logger.info("[claude code] ~$%.3f, %s turns, %s session", float(cost or 0), parsed.get("num_turns", "?"),
                 "resumed" if resumed else "new")
+    denied = _denied(parsed)
+    if denied:
+        logger.warning("[claude code] refused: %s", " · ".join(denied))
     return DevOutcome(
         float(cost) if isinstance(cost, (int, float)) else None,
         session if isinstance(session, str) and session else None,
+        denied,
     )

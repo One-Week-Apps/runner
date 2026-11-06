@@ -223,6 +223,28 @@ async def test_managed_job_works_in_its_own_clone_and_commits_the_attempt(mock_p
     assert mock_post_callback.await_args.args[1].outcome == "success"
 
 
+async def test_the_commands_refused_to_claude_code_reach_the_runner(mock_post_callback, tmp_path):
+    refused = json.dumps({"is_error": False, "permission_denials": [{"tool_name": "Bash", "tool_input": {"command": "uuidgen"}}]})
+    runner = FakeCommandRunner(overrides={("claude", "-p"): CommandResult(0, refused, "")})
+
+    await run_job(MANAGED_JOB, runner=runner, timeout_seconds=10, repos_dir=tmp_path)
+
+    assert mock_post_callback.await_args.args[1].dev_denied == ["uuidgen"]
+
+
+async def test_invented_project_ids_are_made_random_before_the_build(mock_post_callback, tmp_path):
+    clone = tmp_path / "One-Week-Apps" / "EscapeFromBlindness" / "App.xcodeproj"
+    clone.mkdir(parents=True)
+    (clone / "project.pbxproj").write_text("A1E5C0DE0000000000000031 /* x */ = {};\n")
+    runner = FakeCommandRunner(overrides={("git", "show"): CommandResult(0, "", "")})
+
+    await run_job(MANAGED_JOB, runner=runner, timeout_seconds=10, repos_dir=tmp_path)
+
+    assert "A1E5C0DE" not in (clone / "project.pbxproj").read_text()
+    order = [tuple(c[:2]) for c in runner.calls]
+    assert order.index(("claude", "-p")) < order.index(("git", "show")) < order.index(("xcodebuild", "build-for-testing"))
+
+
 async def test_managed_job_commits_even_when_the_build_fails(mock_post_callback, tmp_path):
     runner = FakeCommandRunner(overrides={("xcodebuild", "build-for-testing"): CommandResult(65, "", "error")})
 
