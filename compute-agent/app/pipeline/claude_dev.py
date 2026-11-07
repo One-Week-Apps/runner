@@ -48,7 +48,8 @@ ALLOWED_TOOLS = [
 FRAME = (
     "\n\nCadre de travail : le Runner compile, lance les tests et commite après toi : ne lance ni build, ni tests, "
     "ni simulateur. Pour lire et chercher, utilise Read, Grep et Glob (pas cat, head, grep ni rg). Les seules commandes "
-    "permises sont git status, git diff, git log, ls, xcodebuild -list et plutil -lint ; toute autre sera refusée. "
+    "permises sont git status, git diff, git log, ls, xcodebuild -list et plutil -lint, lancées telles quelles depuis le "
+    "dépôt où tu es déjà (sans `git -C`, sans `cd`, sans les enchaîner avec && ou |) ; toute autre sera refusée. "
     "Si une consigne demande une autre commande, obtiens le résultat autrement (par exemple, écris toi-même une "
     "valeur hexadécimale aléatoire) ; si c'est impossible, dis-le en une ligne au début de ta réponse."
 )

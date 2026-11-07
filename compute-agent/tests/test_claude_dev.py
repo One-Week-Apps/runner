@@ -170,6 +170,7 @@ def test_the_prompt_tells_claude_code_what_it_may_run_and_what_the_runner_does()
         assert "le Runner compile" in prompt
         assert "Read, Grep et Glob" in prompt
         assert "plutil -lint" in prompt
+        assert "sans `git -C`" in prompt
 
 
 async def test_the_commands_refused_to_claude_code_are_returned_once_each():
