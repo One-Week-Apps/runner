@@ -28,6 +28,12 @@ You answer **OK** to merge the work into your base branch or **KO + one line of 
 6. **Report** with screenshots per step and device, failing tests, cost, and a link to the diff.
 7. **Reply** `OK` (merged into the base branch) or `KO 1.2 : the title is cut` (new attempt on the same branch).
 
+On your phone, in the One Week Apps Focus app: you jot down a thought, Studio splits it into one task per screen,
+you follow the Runner's progress, then read the report (screenshots, VoiceOver reading order, done criteria) and
+answer OK.
+
+<p align="center"><img src="docs/focus-demo.gif" width="720" alt="The Focus app on a phone (French captions, Runner progress sped up): a thought about the EscapeFromBlindness app is split by Studio into two tasks for the Runner, the Runner's progress updates live, the report shows the Levels screen with its VoiceOver reading order and checked criteria, and an OK merges the branch."></p>
+
 ## What stays on your Mac, what leaves it
 
 | Stays on your Mac | Sent to One Week Apps Studio (when paired) |
@@ -141,6 +147,10 @@ pour une nouvelle tentative. Pour fusionner vous-même, mettez `"merge": "pr"` s
 `~/.aitasker/config.json` : le Runner ouvre alors seulement la pull request.
 
 Le guide pas à pas : [Démarrer avec Studio](https://www.one-week-apps.com/studio/).
+
+Dans l'app One Week Apps Focus (GIF plus haut) : vous notez une pensée, Studio la découpe en une tâche par écran,
+vous suivez l'avancement du Runner, puis vous lisez le rapport (captures, ordre de lecture VoiceOver, critères
+de fini) et vous répondez OK.
 
 **Installation** avec l'app Focus (code affiché dans Focus, Mac → Connecter mon Mac) :
 
