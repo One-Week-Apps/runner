@@ -75,11 +75,11 @@
       "raw": "6_voiceover",
       "fr-FR": {
         "title": "Pensé pour *VoiceOver*",
-        "subtitle": "Pour les joueurs aveugles et malvoyants, et un vrai défi pour les voyants."
+        "subtitle": "Pour les joueurs déficients visuels, et un vrai défi pour les voyants."
       },
       "en-US": {
         "title": "Built for *VoiceOver*",
-        "subtitle": "For blind and partially sighted players, and a real challenge for sighted ones."
+        "subtitle": "For visually impaired players, and a real challenge for sighted ones."
       }
     }
   ]
