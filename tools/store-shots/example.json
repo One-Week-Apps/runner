@@ -1,0 +1,86 @@
+{
+  "output_dir": "screenshots",
+  "raw_dirs": {
+    "iphone_69": "screenshots_src/iphone",
+    "ipad_13": "screenshots_src/ipad"
+  },
+  "locales": {
+    "fr-FR": {
+      "raw_prefix": "fr_",
+      "speaker": "VoiceOver"
+    },
+    "en-US": {
+      "raw_prefix": "en_",
+      "speaker": "VoiceOver"
+    }
+  },
+  "shots": [
+    {
+      "raw": "3_door",
+      "fr-FR": {
+        "title": "L'écran est noir.\n*Écoute.*",
+        "subtitle": "Tu joues à l'oreille, guidé par VoiceOver.",
+        "bubble": "Une porte se situe en face de moi. Elle semble verrouillée par un cadenas circulaire. Je dois trouver le code.",
+        "bubble_top": 0.3
+      },
+      "en-US": {
+        "title": "The screen is black.\n*Listen.*",
+        "subtitle": "You play by ear, guided by VoiceOver.",
+        "bubble": "A door stands in front of me. It seems to be locked. I need to find the code.",
+        "bubble_top": 0.3
+      }
+    },
+    {
+      "raw": "2_question",
+      "fr-FR": {
+        "title": "Chaque choix *compte*",
+        "subtitle": "Écoute la scène, puis décide.",
+        "bubble": "… tu es tombé dans un piège et des pics de glace jonchent le sol autour de toi, que fais-tu ?",
+        "bubble_top": 0.62
+      },
+      "en-US": {
+        "title": "Every choice *counts*",
+        "subtitle": "Listen to the scene, then decide.",
+        "bubble": "… you just fell into a trap with spikes around you, what do you do?",
+        "bubble_top": 0.62
+      }
+    },
+    {
+      "raw": "4_riddle",
+      "fr-FR": {
+        "title": "Des *énigmes* à résoudre",
+        "subtitle": "Retiens les indices, trouve le mot de passe.",
+        "bubble": "Hum. Quel mot de passe as-tu entré à la porte précédente ?",
+        "bubble_top": 0.45
+      },
+      "en-US": {
+        "title": "*Riddles* to solve",
+        "subtitle": "Remember the clues, find the password.",
+        "bubble": "Hum. What password did you enter in the last room?",
+        "bubble_top": 0.45
+      }
+    },
+    {
+      "raw": "1_selection",
+      "fr-FR": {
+        "title": "4 chapitres, *12 niveaux*",
+        "subtitle": "De la Grotte de glace au Tombeau caché. Ta progression est sauvegardée."
+      },
+      "en-US": {
+        "title": "4 chapters, *12 levels*",
+        "subtitle": "From the Ice Cave to the Hidden Tomb. Your progress is saved."
+      }
+    },
+    {
+      "raw": "6_voiceover",
+      "fr-FR": {
+        "title": "Pensé pour *VoiceOver*",
+        "subtitle": "Pour les joueurs aveugles et malvoyants, et un vrai défi pour les voyants."
+      },
+      "en-US": {
+        "title": "Built for *VoiceOver*",
+        "subtitle": "For blind and partially sighted players, and a real challenge for sighted ones."
+      }
+    }
+  ]
+}

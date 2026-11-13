@@ -1,0 +1,133 @@
+#!/usr/bin/env python3
+"""
+store-shots - turn raw app screenshots into App Store marketing screenshots:
+a caption on top, the real screen in the middle and, optionally, a bubble with what
+VoiceOver (or the app) says. One JSON config per app, every locale and device size at once.
+Output follows fastlane deliver's layout: <output_dir>/<locale>/<n>_<device>.png
+
+Usage:
+    store-shots <config.json>
+
+See README.md next to this script for the config schema.
+"""
+import html
+import json
+import shutil
+import subprocess
+import sys
+import tempfile
+from pathlib import Path
+
+CHROME = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
+
+# Sizes App Store Connect asks for (portrait). Apple scales them down for smaller devices.
+DEVICES = {
+    "iphone_69": (1320, 2868),
+    "ipad_13": (2064, 2752),
+}
+
+PAGE = """<!doctype html><html><head><meta charset="utf-8"><style>
+:root{{--bg1:{bg1};--bg2:{bg2};--accent:{accent};--text:{text};--bubble:{bubble};--bubbleText:{bubble_text}}}
+*{{box-sizing:border-box;margin:0}}
+html,body{{width:{w}px;height:{h}px;overflow:hidden}}
+body{{background:linear-gradient(165deg,var(--bg1),var(--bg2));font-family:-apple-system,"SF Pro Display",Helvetica,Arial,sans-serif;color:var(--text);
+  display:flex;flex-direction:column;align-items:center;padding:{pad_top}px {pad_x}px 0}}
+h1{{font-size:{title_size}px;font-weight:800;line-height:1.08;text-align:center;letter-spacing:-0.01em}}
+h1 em{{font-style:normal;color:var(--accent)}}
+p.sub{{margin-top:{gap}px;font-size:{sub_size}px;line-height:1.3;text-align:center;opacity:.85;max-width:{sub_width}px}}
+.stage{{position:relative;margin-top:{stage_gap}px;flex:1;width:100%;display:flex;justify-content:center}}
+.screen{{width:{screen_w}px;border-radius:{radius}px;border:{border}px solid rgba(255,255,255,.18);
+  box-shadow:0 30px 80px rgba(0,0,0,.45);align-self:flex-start;display:block}}
+.bubble{{position:absolute;left:50%;transform:translateX(-50%);top:{bubble_top}px;width:{bubble_w}px;
+  background:var(--bubble);color:var(--bubbleText);border-radius:{bubble_radius}px;padding:{bubble_pad}px;
+  box-shadow:0 24px 60px rgba(0,0,0,.4)}}
+.bubble .who{{font-size:{who_size}px;font-weight:700;color:var(--accent);margin-bottom:{who_gap}px;display:flex;align-items:center;gap:{who_gap}px}}
+.bubble .who svg{{width:{who_size}px;height:{who_size}px}}
+.bubble .say{{font-size:{say_size}px;line-height:1.35;font-style:italic}}
+</style></head><body>
+<h1>{title}</h1>
+{sub}
+<div class="stage"><img class="screen" src="{image}">{bubble_html}</div>
+</body></html>"""
+
+SPEAKER = ('<svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M3 9v6h4l5 5V4L7 9H3z"/>'
+           '<path d="M16.5 12a4.5 4.5 0 0 0-2.5-4v8a4.5 4.5 0 0 0 2.5-4z"/>'
+           '<path d="M14 3.2v2.1a7 7 0 0 1 0 13.4v2.1a9 9 0 0 0 0-17.6z"/></svg>')
+
+
+def emphasize(text):
+    """*word* puts the word in the accent color."""
+    parts = html.escape(text).split("*")
+    return "".join(f"<em>{p}</em>" if i % 2 else p for i, p in enumerate(parts)).replace("\n", "<br>")
+
+
+def render_page(device, shot_text, image_path, theme, speaker_label, french):
+    w, h = DEVICES[device]
+    is_ipad = device.startswith("ipad")
+    unit = w / 1320
+    screen_w = int(w * (0.62 if is_ipad else 0.74))
+    bubble = shot_text.get("bubble")
+    bubble_html = ""
+    if bubble:
+        quoted = f"« {html.escape(bubble)} »" if french else f"“{html.escape(bubble)}”"
+        bubble_html = (f'<div class="bubble"><div class="who">{SPEAKER}{html.escape(speaker_label)}</div>'
+                       f'<div class="say">{quoted}</div></div>')
+    sub = shot_text.get("subtitle")
+    return PAGE.format(
+        w=w, h=h, pad_top=int(150 * unit), pad_x=int(90 * unit),
+        title_size=int(118 * unit), sub_size=int(54 * unit), gap=int(30 * unit), sub_width=int(w * 0.84),
+        stage_gap=int(80 * unit), screen_w=screen_w, radius=int(70 * unit), border=int(8 * unit),
+        bubble_top=int(shot_text.get("bubble_top", 0.42) * screen_w * h / w * (0.9 if is_ipad else 1.0)),
+        bubble_w=int(w * (0.7 if is_ipad else 0.86)), bubble_radius=int(44 * unit), bubble_pad=int(48 * unit),
+        who_size=int(40 * unit), who_gap=int(14 * unit), say_size=int(50 * unit),
+        title=emphasize(shot_text["title"]),
+        sub=f'<p class="sub">{html.escape(sub)}</p>' if sub else "",
+        image=image_path.as_uri(), bubble_html=bubble_html, **theme,
+    )
+
+
+def main():
+    if len(sys.argv) != 2:
+        print(__doc__)
+        sys.exit(1)
+    config_path = Path(sys.argv[1]).expanduser().resolve()
+    config = json.loads(config_path.read_text(encoding="utf-8"))
+    base = config_path.parent
+    out_dir = (base / config["output_dir"]).resolve()
+    theme = {"bg1": "#0b1f3a", "bg2": "#12325e", "accent": "#f28c28", "text": "#ffffff",
+             "bubble": "#ffffff", "bubble_text": "#14213d", **config.get("theme", {})}
+
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp = Path(tmp)
+        for locale, loc in config["locales"].items():
+            locale_dir = out_dir / locale
+            if locale_dir.exists():
+                for old in locale_dir.glob("*.png"):
+                    old.unlink()
+            locale_dir.mkdir(parents=True, exist_ok=True)
+            for device, raw_dir in config["raw_dirs"].items():
+                raw_dir = (base / raw_dir).expanduser().resolve()
+                if not raw_dir.is_dir():
+                    print(f"skipped {device}: no raw screenshots in {raw_dir}")
+                    continue
+                for index, shot in enumerate(config["shots"]):
+                    text = shot[locale]
+                    raw = raw_dir / f"{loc['raw_prefix']}{shot['raw']}.png"
+                    if not raw.exists():
+                        sys.exit(f"missing raw screenshot: {raw}")
+                    page = tmp / f"{locale}_{device}_{index}.html"
+                    page.write_text(render_page(device, text, raw, theme, loc.get("speaker", "VoiceOver"), locale.startswith("fr")),
+                                    encoding="utf-8")
+                    w, h = DEVICES[device]
+                    target = locale_dir / f"{index}_{device}.png"
+                    subprocess.run([CHROME, "--headless=new", "--disable-gpu", "--hide-scrollbars",
+                                    "--force-device-scale-factor=1", f"--window-size={w},{h}",
+                                    "--allow-file-access-from-files", f"--screenshot={target}", page.as_uri()],
+                                   check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                    print(f"{target.relative_to(out_dir)}")
+
+
+if __name__ == "__main__":
+    if not Path(CHROME).exists() and not shutil.which("google-chrome"):
+        sys.exit("Google Chrome is required")
+    main()

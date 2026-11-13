@@ -97,6 +97,11 @@ Only `allowedAuthors` can trigger work, since Claude Code runs on your Mac. Envi
 | `JOB_TIMEOUT_SECONDS` | `900` | Timeout of each pipeline stage (compute agent) |
 | `GITHUB_TOKEN` | `gh auth token` | GitHub API token |
 
+## Tools
+
+- `tools/store-shots`: composes App Store screenshots (caption, real screen, a bubble quoting what the app
+  says) from a UI test's raw captures, for every language and device size. See its README.
+
 ## Development
 
 ```bash
