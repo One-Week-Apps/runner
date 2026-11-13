@@ -4,6 +4,8 @@ Runs iOS development tasks on your own Mac with your own Claude Code. You write 
 Runner implements it, builds the app, runs the UI tests on simulators, takes screenshots and sends you a report.
 You answer **OK** to merge the work into your base branch or **KO + one line of feedback** to get another attempt.
 
+<p align="center"><img src="docs/runner-explainer.gif" width="960" alt="The Runner in 30 seconds (French captions): you describe a task in Focus, your Claude Code develops it on your Mac, it builds, runs UI tests and takes screenshots, then you answer OK or KO in the report."></p>
+
 *[Version française plus bas.](#en-français) · Step-by-step guide (French): [Démarrer avec Studio](https://www.one-week-apps.com/studio/)*
 
 ## How it works
