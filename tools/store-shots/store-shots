@@ -21,9 +21,11 @@ from pathlib import Path
 CHROME = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
 
 # Sizes App Store Connect asks for (portrait). Apple scales them down for smaller devices.
+# Google Play: 9:16, the longest side at most twice the shortest.
 DEVICES = {
     "iphone_69": (1320, 2868),
     "ipad_13": (2064, 2752),
+    "android_phone": (1242, 2208),
 }
 
 PAGE = """<!doctype html><html><head><meta charset="utf-8"><style>
